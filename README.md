@@ -198,16 +198,4 @@ The screenshot below shows the OpenDroneID Android app receiving live advertisem
 
 <p align="center">
   <img src=".github/images/android-opendroneid.png" width="300" alt="OpenDroneID Android app showing one detected drone with Basic ID, Location (no position), System, and Operator ID messages">
-</p>
-
-## CI
-
-GitHub Actions builds the firmware in `.github/workflows/firmware.yml` using Espressif's `idf:release-v5.5` container. The workflow runs on pull requests, pushes to `main` or `development`, and manual dispatch.
-
-The build job uses a target matrix. It currently contains only `esp32s3`; add more ESP-IDF targets there when the firmware supports them. Successful runs upload the bootloader, partition table, app binary, ELF, map file, and flash arguments as workflow artifacts.
-
-## Notes
-
-- `make build` runs `idf.py set-target esp32s3 build` to avoid stale local `sdkconfig` target settings.
-- `make flash` uses the `/dev/ttyESP32` bridge and leaves reset control to the bridge setup.
-- Generated ESP-IDF files such as `build/`, `sdkconfig`, and `sdkconfig.old` are intentionally ignored.
+</p>.
