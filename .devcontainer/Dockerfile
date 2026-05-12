@@ -4,6 +4,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV EDITOR=vim
 ENV ESPPORT=/dev/ttyESP32
 ENV IDF_CCACHE_ENABLE=1
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
 ENV PATH=/root/.opencode/bin:/workspace/bin:$PATH
 
 WORKDIR /workspace
