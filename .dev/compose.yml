@@ -1,0 +1,22 @@
+name: esp-remoteid
+
+services:
+  devcontainer:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    command: sleep infinity
+    volumes:
+      - ..:/workspace:cached
+    environment:
+      - ESPPORT=/dev/ttyESP32
+      - IDF_CCACHE_ENABLE=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    privileged: true
+    networks:
+      - dev
+
+networks:
+  dev:
+    driver: bridge

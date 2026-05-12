@@ -1,0 +1,102 @@
+name: Firmware
+run-name: ${{ github.actor }} is building RemoteID ESP firmware
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+    - .dev/scripts/**
+    - .github/workflows/firmware.yml
+    - CMakeLists.txt
+    - Makefile
+    - components/**
+    - sdkconfig.defaults
+    - src/**
+    - third_party/**
+  push:
+    branches:
+    - main
+    - development
+    paths:
+    - .dev/scripts/**
+    - .github/workflows/firmware.yml
+    - CMakeLists.txt
+    - Makefile
+    - components/**
+    - sdkconfig.defaults
+    - src/**
+    - third_party/**
+
+concurrency:
+  group: firmware-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    container:
+      image: docker.io/espressif/idf:release-v5.5
+      env:
+        IDF_CCACHE_ENABLE: "1"
+        CCACHE_DIR: /github/home/.ccache
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+        - esp32s3
+
+    steps:
+    - name: Git Checkout
+      uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Restore compiler cache
+      uses: actions/cache@v4
+      with:
+        path: /github/home/.ccache
+        key: ${{ runner.os }}-esp-idf-v5.5-${{ matrix.target }}-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-esp-idf-v5.5-${{ matrix.target }}-
+
+    - name: Validate ESP-IDF project
+      shell: bash
+      run: |
+        set -euo pipefail
+        . /opt/esp/idf/export.sh
+        idf.py set-target ${{ matrix.target }} reconfigure
+
+    - name: Build firmware
+      shell: bash
+      run: |
+        set -euo pipefail
+        . /opt/esp/idf/export.sh
+        idf.py build
+
+    - name: Print firmware size
+      shell: bash
+      run: |
+        set -euo pipefail
+        . /opt/esp/idf/export.sh
+        idf.py size
+
+    - name: Upload firmware artifacts
+      uses: actions/upload-artifact@v5
+      with:
+        name: esp-remoteid-${{ matrix.target }}-${{ github.sha }}
+        if-no-files-found: error
+        retention-days: 14
+        path: |
+          build/bootloader/bootloader.bin
+          build/partition_table/partition-table.bin
+          build/esp_remoteid.bin
+          build/esp_remoteid.elf
+          build/esp_remoteid.map
+          build/flash_args

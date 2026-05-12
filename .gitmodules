@@ -1,0 +1,3 @@
+[submodule "third_party/opendroneid-core-c"]
+	path = third_party/opendroneid-core-c
+	url = https://github.com/opendroneid/opendroneid-core-c.git

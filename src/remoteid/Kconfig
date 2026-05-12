@@ -1,0 +1,196 @@
+menu "ESP Remote ID"
+
+config REMOTEID_UAS_ID
+    string "UAS ID (max 20 characters)"
+    default "CHANGE_ME_UAS_ID"
+    help
+        Unique identifier for this drone. For self-built drones without a
+        manufacturer serial number, enter your national operator/CAA
+        registration number here and set the ID type to "CAA Registration ID".
+        For drones with a manufacturer serial number per ANSI/CTA-2063-A,
+        enter that number and set the ID type to "Serial Number".
+        Must be 20 characters or fewer.
+
+config REMOTEID_OPERATOR_ID
+    string "Operator registration ID (max 20 characters)"
+    default "CHANGE_ME_OP_ID"
+    help
+        Your national pilot/operator registration number as issued by your
+        Civil Aviation Authority (e.g. "FIN87ASTRDGE12K8" for EASA). This
+        is broadcast in the Operator ID message. Must be 20 characters or
+        fewer.
+
+choice REMOTEID_ID_TYPE
+    prompt "UAS ID type"
+    default REMOTEID_ID_TYPE_CAA_REG
+    help
+        ASTM F3411 ID type encoded in the BasicID message.
+        For self-built drones without a CTA-2063-A serial number, select
+        "CAA Registration ID" and enter your national registration number
+        as the UAS ID. Select "Serial Number" only if you have a
+        manufacturer-issued serial number in ANSI/CTA-2063-A format.
+
+config REMOTEID_ID_TYPE_SERIAL_NUMBER
+    bool "Serial Number (ANSI/CTA-2063-A)"
+
+config REMOTEID_ID_TYPE_CAA_REG
+    bool "CAA Registration ID (operator/national registration number)"
+
+endchoice
+
+choice REMOTEID_UA_TYPE
+    prompt "UA type"
+    default REMOTEID_UA_TYPE_MULTIROTOR
+    help
+        Aircraft type declared in the BasicID message.
+
+config REMOTEID_UA_TYPE_MULTIROTOR
+    bool "Helicopter / Multirotor"
+
+config REMOTEID_UA_TYPE_AEROPLANE
+    bool "Fixed-wing aeroplane"
+
+config REMOTEID_UA_TYPE_HYBRID_LIFT
+    bool "Hybrid lift (VTOL fixed-wing)"
+
+config REMOTEID_UA_TYPE_OTHER
+    bool "Other"
+
+endchoice
+
+choice REMOTEID_EU_CATEGORY
+    prompt "EU operation category"
+    default REMOTEID_EU_CATEGORY_OPEN
+    help
+        EU Drone Regulation operation category for the System message.
+        Self-built drones without a class label typically operate under
+        the Open category rules. Use Specific or Certified only if you
+        hold the corresponding authorisation or type certificate.
+
+config REMOTEID_EU_CATEGORY_UNDECLARED
+    bool "Undeclared"
+
+config REMOTEID_EU_CATEGORY_OPEN
+    bool "Open"
+
+config REMOTEID_EU_CATEGORY_SPECIFIC
+    bool "Specific"
+
+config REMOTEID_EU_CATEGORY_CERTIFIED
+    bool "Certified"
+
+endchoice
+
+choice REMOTEID_EU_CLASS
+    prompt "EU equipment class"
+    default REMOTEID_EU_CLASS_UNDECLARED
+    help
+        EU equipment class label for the System message. Self-built drones
+        do not carry a class label; leave this as Undeclared. Only select
+        C0 through C6 if your equipment bears the corresponding CE mark
+        from the manufacturer.
+
+config REMOTEID_EU_CLASS_UNDECLARED
+    bool "Undeclared (self-built / no class label)"
+
+config REMOTEID_EU_CLASS_C0
+    bool "C0"
+
+config REMOTEID_EU_CLASS_C1
+    bool "C1"
+
+config REMOTEID_EU_CLASS_C2
+    bool "C2"
+
+config REMOTEID_EU_CLASS_C3
+    bool "C3"
+
+config REMOTEID_EU_CLASS_C4
+    bool "C4"
+
+config REMOTEID_EU_CLASS_C5
+    bool "C5"
+
+config REMOTEID_EU_CLASS_C6
+    bool "C6"
+
+endchoice
+
+config REMOTEID_HAS_POSITION
+    bool "Broadcast a known takeoff position"
+    default n
+    help
+        Enable to broadcast a configured static position in the Location
+        and System messages, using the takeoff coordinates entered below.
+        Disable if no GPS fix or known position is available: the messages
+        will then carry the ASTM F3411 invalid sentinel values
+        (lat=0, lon=0, alt=-1000 m, speed=invalid), which is the
+        protocol-compliant way of indicating an unknown position.
+
+if REMOTEID_HAS_POSITION
+
+config REMOTEID_TAKEOFF_LAT_1E6
+    int "Takeoff latitude (degrees × 10⁶)"
+    default 0
+    range -90000000 90000000
+    help
+        Latitude of the takeoff/operator location in degrees, multiplied
+        by 10⁶ (six decimal places, ~11 cm resolution).
+        Example: 50.962290° N → 50962290.
+
+config REMOTEID_TAKEOFF_LON_1E6
+    int "Takeoff longitude (degrees × 10⁶)"
+    default 0
+    range -180000000 180000000
+    help
+        Longitude of the takeoff/operator location in degrees, multiplied
+        by 10⁶ (six decimal places, ~11 cm resolution).
+        Example: 4.454977° E → 4454977.
+
+config REMOTEID_TAKEOFF_ALT_M
+    int "Takeoff altitude above WGS-84 ellipsoid (metres)"
+    default 0
+    range -1000 9000
+    help
+        Altitude of the takeoff point above the WGS-84 ellipsoid in whole
+        metres. Obtain this value from a GNSS receiver or an online
+        mapping service. This is not the altitude above sea level (AMSL)
+        unless your area has negligible geoid undulation.
+
+endif # REMOTEID_HAS_POSITION
+
+choice REMOTEID_BLE_TX_POWER
+    prompt "BLE advertising TX power"
+    default REMOTEID_BLE_TX_POWER_P9
+    help
+        BLE Remote ID uses a power-based expectation rather than a guaranteed
+        reception distance. Select the highest level allowed by the board,
+        antenna, enclosure, and local RF constraints for range testing.
+
+config REMOTEID_BLE_TX_POWER_N12
+    bool "-12 dBm"
+
+config REMOTEID_BLE_TX_POWER_N9
+    bool "-9 dBm"
+
+config REMOTEID_BLE_TX_POWER_N6
+    bool "-6 dBm"
+
+config REMOTEID_BLE_TX_POWER_N3
+    bool "-3 dBm"
+
+config REMOTEID_BLE_TX_POWER_N0
+    bool "0 dBm"
+
+config REMOTEID_BLE_TX_POWER_P3
+    bool "+3 dBm"
+
+config REMOTEID_BLE_TX_POWER_P6
+    bool "+6 dBm"
+
+config REMOTEID_BLE_TX_POWER_P9
+    bool "+9 dBm"
+
+endchoice
+
+endmenu
