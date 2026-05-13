@@ -3,7 +3,7 @@ HOST_SERIAL ?= /dev/cu.usbserial-XXXX
 SOCAT_PORT ?= 54321
 BAUD ?= 115200
 
-.PHONY: help set-target menuconfig build flash flash-idf monitor monitor-raw probe clean bridge-host bridge-container host-setup-socat
+.PHONY: help set-target reset menuconfig build flash flash-idf monitor monitor-raw probe clean bridge-host bridge-container host-setup-socat
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -11,11 +11,15 @@ help: ## Show available targets
 set-target: ## Configure ESP-IDF target for ESP32-S3
 	idf.py set-target esp32s3
 
+reset: ## Reset sdkconfig from sdkconfig.defaults for ESP32-S3
+	rm -f sdkconfig sdkconfig.old
+	idf.py set-target esp32s3
+
 menuconfig: ## Open ESP-IDF menuconfig
 	idf.py menuconfig
 
 build: ## Build firmware
-	idf.py set-target esp32s3 build
+	idf.py build
 
 flash: build ## Flash firmware over the socat bridge via ESPPORT
 	cd build && esptool.py --chip esp32s3 -p $(ESPPORT) -b 460800 --before no_reset --after no_reset write_flash @flash_args
