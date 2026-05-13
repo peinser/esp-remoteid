@@ -1,5 +1,28 @@
 menu "ESP Remote ID"
 
+config REMOTEID_TRANSPORT_BLE
+    bool "Enable Bluetooth LE legacy advertisements"
+    default y
+    help
+        Broadcast OpenDroneID messages using BLE legacy advertisements with
+        service UUID 0xFFFA. Disable this when testing Wi-Fi-only reception.
+
+config REMOTEID_TRANSPORT_WIFI_BEACON
+    bool "Enable Wi-Fi Beacon advertisements"
+    default n
+    help
+        Broadcast OpenDroneID Message Pack payloads in Wi-Fi Beacon vendor
+        information elements. This can be enabled together with BLE or used
+        alone when testing receiver transport support.
+
+config REMOTEID_TRANSPORT_WIFI_NAN
+    bool "Enable Wi-Fi NAN advertisements"
+    default n
+    help
+        Broadcast OpenDroneID Message Pack payloads in Wi-Fi Neighbor
+        Awareness Networking sync/action frames. This is a separate transport
+        from Wi-Fi Beacon and receiver apps may support one but not the other.
+
 config REMOTEID_UAS_ID
     string "UAS ID (max 20 characters)"
     default "CHANGE_ME_UAS_ID"
@@ -161,6 +184,7 @@ endif # REMOTEID_HAS_POSITION
 
 choice REMOTEID_BLE_TX_POWER
     prompt "BLE advertising TX power"
+    depends on REMOTEID_TRANSPORT_BLE
     default REMOTEID_BLE_TX_POWER_P9
     help
         BLE Remote ID uses a power-based expectation rather than a guaranteed
@@ -192,5 +216,73 @@ config REMOTEID_BLE_TX_POWER_P9
     bool "+9 dBm"
 
 endchoice
+
+config REMOTEID_TX_LED_GPIO
+    int "TX status LED GPIO"
+    default -1
+    range -1 48
+    help
+        GPIO for a simple status LED that pulses on each successful BLE or
+        Wi-Fi Remote ID transmission. Set to -1 to disable. For boards with
+        an addressable RGB LED, this option only works if the LED can be driven
+        as a simple GPIO.
+
+config REMOTEID_TX_LED_ACTIVE_HIGH
+    bool "TX status LED is active high"
+    default y
+    depends on REMOTEID_TX_LED_GPIO >= 0
+    help
+        Disable this if the configured LED turns on when the GPIO is driven
+        low.
+
+config REMOTEID_TX_LED_PULSE_MS
+    int "TX status LED pulse duration (ms)"
+    default 40
+    range 1 1000
+    depends on REMOTEID_TX_LED_GPIO >= 0
+    help
+        Duration of the LED pulse after each successful transmission.
+
+if REMOTEID_TRANSPORT_WIFI_BEACON || REMOTEID_TRANSPORT_WIFI_NAN
+
+config REMOTEID_WIFI_CHANNEL
+    int "Wi-Fi Remote ID channel"
+    default 6
+    range 1 13
+    help
+        2.4 GHz Wi-Fi channel used for Wi-Fi Remote ID transmission. Channel
+        6 is the standard/default channel for ASTM F3411 Wi-Fi Beacon/NAN on
+        2.4 GHz. Select a different channel only when permitted and required.
+
+config REMOTEID_WIFI_INTERVAL_MS
+    int "Wi-Fi Remote ID transmit interval (ms)"
+    default 1000
+    range 100 5000
+    help
+        Interval between OpenDroneID Wi-Fi transmissions. Use 1000 ms for a
+        1 Hz Remote ID cadence.
+
+config REMOTEID_WIFI_TX_POWER_DBM
+    int "Wi-Fi TX power (dBm)"
+    default 20
+    range 2 20
+    help
+        Wi-Fi transmit power in dBm. ESP-IDF accepts quarter-dBm units; the
+        firmware converts this integer value internally. Keep this within
+        your antenna, enclosure, and local RF limits.
+
+endif # REMOTEID_TRANSPORT_WIFI_BEACON || REMOTEID_TRANSPORT_WIFI_NAN
+
+if REMOTEID_TRANSPORT_WIFI_BEACON
+
+config REMOTEID_WIFI_BEACON_SSID
+    string "Wi-Fi Beacon SSID"
+    default "OpenDroneID"
+    help
+        SSID carried in the Remote ID Wi-Fi Beacon frame. Keep this at 32
+        bytes or fewer. Remote ID receivers should parse the vendor IE, not
+        rely on this SSID.
+
+endif # REMOTEID_TRANSPORT_WIFI_BEACON
 
 endmenu

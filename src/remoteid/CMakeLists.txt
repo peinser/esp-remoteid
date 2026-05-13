@@ -1,1 +1,21 @@
-idf_component_register(SRCS "remoteid.c" INCLUDE_DIRS "." REQUIRES bt nvs_flash opendroneid_core)
+idf_component_register(
+    SRCS
+        "main.c"
+        "remoteid/ble.c"
+        "remoteid/encode.c"
+        "remoteid/led.c"
+        "remoteid/model.c"
+        "remoteid/wifi.c"
+    INCLUDE_DIRS
+        "."
+        "remoteid"
+    REQUIRES
+        bt
+        esp_driver_gpio
+        esp_event
+        esp_netif
+        esp_timer
+        esp_wifi
+        nvs_flash
+        opendroneid_core
+)
