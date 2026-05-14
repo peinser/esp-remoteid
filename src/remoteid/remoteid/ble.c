@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "auth.h"
 #include "config.h"
 #include "encode.h"
 #include "esp_bt.h"
@@ -27,7 +28,7 @@
 
 static const char *TAG = "remoteid_ble";
 
-static const remoteid_message_index_t s_message_schedule[] = {
+static const uint8_t s_message_schedule[] = {
     REMOTEID_MESSAGE_BASIC_ID,
     REMOTEID_MESSAGE_LOCATION,
     REMOTEID_MESSAGE_BASIC_ID,
@@ -36,6 +37,12 @@ static const remoteid_message_index_t s_message_schedule[] = {
     REMOTEID_MESSAGE_LOCATION,
     REMOTEID_MESSAGE_OPERATOR_ID,
     REMOTEID_MESSAGE_LOCATION,
+#if CONFIG_REMOTEID_AUTH_ED25519
+    REMOTEID_MESSAGE_AUTH_0,
+    REMOTEID_MESSAGE_AUTH_1,
+    REMOTEID_MESSAGE_AUTH_2,
+    REMOTEID_MESSAGE_AUTH_3,
+#endif
 };
 
 static remoteid_message_bundle_t s_bundle;
@@ -138,15 +145,28 @@ static void remoteid_ble_task(void *arg)
             continue;
         }
 
-        remoteid_message_index_t message_index = s_message_schedule[s_schedule_index];
-        esp_err_t rc = remoteid_encode_dynamic_message(&snapshot, &s_bundle, message_index);
-        if (rc != ESP_OK) {
-            ESP_LOGE(TAG, "failed to encode dynamic message %u, broadcasting stale message", message_index);
-        }
+        uint8_t schedule_entry = s_message_schedule[s_schedule_index];
 
-        const uint8_t *message = s_bundle.messages[message_index];
-        if (advertise_message(message) == ESP_OK) {
-            ESP_LOGD(TAG, "advertising ODID message type %u", message[0] >> 4);
+        if (schedule_entry >= REMOTEID_MESSAGE_COUNT) {
+            int page = schedule_entry - REMOTEID_MESSAGE_COUNT;
+            if (page == 0) {
+                remoteid_encode_dynamic_message(&snapshot, &s_bundle, REMOTEID_MESSAGE_LOCATION);
+                remoteid_encode_dynamic_message(&snapshot, &s_bundle, REMOTEID_MESSAGE_SYSTEM);
+                remoteid_auth_sign_bundle(&s_bundle);
+            }
+            if (advertise_message(s_bundle.auth_pages[page]) == ESP_OK) {
+                ESP_LOGD(TAG, "advertising ODID auth page %d", page);
+            }
+        } else {
+            remoteid_message_index_t message_index = (remoteid_message_index_t)schedule_entry;
+            esp_err_t rc = remoteid_encode_dynamic_message(&snapshot, &s_bundle, message_index);
+            if (rc != ESP_OK) {
+                ESP_LOGE(TAG, "failed to encode dynamic message %u, broadcasting stale message", message_index);
+            }
+            const uint8_t *message = s_bundle.messages[message_index];
+            if (advertise_message(message) == ESP_OK) {
+                ESP_LOGD(TAG, "advertising ODID message type %u", message[0] >> 4);
+            }
         }
 
         s_schedule_index = (s_schedule_index + 1) % (sizeof(s_message_schedule) / sizeof(s_message_schedule[0]));
@@ -163,7 +183,7 @@ static void ble_on_sync(void)
     }
 
     ESP_LOGI(TAG, "BLE ready, starting OpenDroneID advertiser");
-    if (xTaskCreate(remoteid_ble_task, "remoteid_ble", 4096, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(remoteid_ble_task, "remoteid_ble", 6144, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create remoteid_ble task");
     }
 }

@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "auth.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -145,6 +146,8 @@ esp_err_t remoteid_encode_uas_data(const remoteid_state_t *state, ODID_UAS_Data 
     uas_data->LocationValid = 1;
     uas_data->SystemValid = 1;
     uas_data->OperatorIDValid = 1;
+
+    remoteid_auth_sign_uas_data(uas_data);
 
     return ESP_OK;
 }

@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "remoteid/auth.c"
         "remoteid/ble.c"
         "remoteid/encode.c"
         "remoteid/indicator.c"
@@ -22,6 +23,8 @@ idf_component_register(
         esp_netif
         esp_timer
         esp_wifi
+        mbedtls
+        monocypher
         nvs_flash
         opendroneid_core
 )

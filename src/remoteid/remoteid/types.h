@@ -11,6 +11,11 @@ typedef enum remoteid_message_index {
     REMOTEID_MESSAGE_SYSTEM,
     REMOTEID_MESSAGE_OPERATOR_ID,
     REMOTEID_MESSAGE_COUNT,
+    // Auth page indices start after base messages; not passed to encode functions
+    REMOTEID_MESSAGE_AUTH_0 = REMOTEID_MESSAGE_COUNT,
+    REMOTEID_MESSAGE_AUTH_1,
+    REMOTEID_MESSAGE_AUTH_2,
+    REMOTEID_MESSAGE_AUTH_3,
 } remoteid_message_index_t;
 
 typedef struct remoteid_state {
@@ -56,4 +61,5 @@ typedef struct remoteid_state {
 
 typedef struct remoteid_message_bundle {
     uint8_t messages[REMOTEID_MESSAGE_COUNT][ODID_MESSAGE_SIZE];
+    uint8_t auth_pages[ODID_AUTH_MAX_PAGES][ODID_MESSAGE_SIZE];
 } remoteid_message_bundle_t;

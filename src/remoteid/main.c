@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "remoteid/auth.h"
 #include "remoteid/ble.h"
 #include "remoteid/indicator.h"
 #include "remoteid/lighting.h"
@@ -29,6 +30,7 @@ void app_main(void)
     ESP_ERROR_CHECK(remoteid_model_init(&state));
     ESP_ERROR_CHECK(remoteid_store_start(&state));
     ESP_ERROR_CHECK(remoteid_lighting_init());
+    ESP_ERROR_CHECK(remoteid_auth_init());
 
 #if CONFIG_REMOTEID_MAVLINK_INPUT
     ESP_ERROR_CHECK(remoteid_mavlink_start());

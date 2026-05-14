@@ -267,14 +267,14 @@ esp_err_t remoteid_wifi_start(void)
     ESP_RETURN_ON_ERROR(init_wifi_driver(), TAG, "initialize Wi-Fi Remote ID transport");
 
 #if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON
-    if (xTaskCreate(remoteid_wifi_beacon_task, "remoteid_wifi_bcn", 4096, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(remoteid_wifi_beacon_task, "remoteid_wifi_bcn", 6144, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create remoteid_wifi_bcn task");
         return ESP_ERR_NO_MEM;
     }
 #endif
 
 #if CONFIG_REMOTEID_TRANSPORT_WIFI_NAN
-    if (xTaskCreate(remoteid_wifi_nan_task, "remoteid_wifi_nan", 4096, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(remoteid_wifi_nan_task, "remoteid_wifi_nan", 6144, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create remoteid_wifi_nan task");
         return ESP_ERR_NO_MEM;
     }

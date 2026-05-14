@@ -5,5 +5,5 @@ idf_component_register(
     INCLUDE_DIRS "../../third_party/opendroneid-core-c/libopendroneid"
 )
 
-target_compile_definitions(${COMPONENT_LIB} PUBLIC ODID_AUTH_MAX_PAGES=1)
+target_compile_definitions(${COMPONENT_LIB} PUBLIC ODID_AUTH_MAX_PAGES=4)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-format)

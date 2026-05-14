@@ -323,3 +323,103 @@ The screenshot below shows the OpenDroneID Android app receiving live advertisem
 <p align="center">
   <img src=".github/images/android-opendroneid.png" width="300" alt="OpenDroneID Android app showing one detected drone with Basic ID, Location (no position), System, and Operator ID messages">
 </p>
+
+## Authentication (F3411-22a Ed25519)
+
+The firmware supports ASTM F3411-22a message set authentication using Ed25519 signatures. When enabled, the four-message set (BasicID + Location + System + OperatorID) is signed on every broadcast cycle and the 64-byte signature is broadcast across four authentication pages.
+
+### How it works
+
+Each broadcast cycle the firmware:
+
+1. Encodes the four base ODID messages into their 25-byte wire format (100 bytes total)
+2. Signs those bytes with the configured Ed25519 private key
+3. Distributes the 64-byte signature across four authentication pages (page 0: 17 bytes + metadata, pages 1–3: 23/23/1 bytes)
+4. Broadcasts the auth pages alongside the base messages
+
+Receivers that have the corresponding public key can verify the signature over the message set they received.
+
+### PKI and CA-signed certificates
+
+The private key on the device is the leaf key of a standard PKI hierarchy:
+
+```
+Your CA root
+    └── Device certificate  (public key + UAS ID/serial + CA signature)
+            └── Ed25519 private key  (on device, used for signing)
+```
+
+The device certificate binds the public key to the drone's identity (UAS ID, operator, validity period) and is signed by your CA. A web service verifying a broadcast:
+
+1. Reads the UAS ID from the BasicID message
+2. Looks up the device certificate in your registry (keyed by UAS ID)
+3. Verifies the Ed25519 signature in the auth pages using the certificate's public key
+4. Verifies the certificate chain back to your CA root
+
+The firmware only needs the private key. The certificate lives in your registry.
+
+### Assumptions and limitations
+
+- **No real-time clock.** The timestamp in auth page 0 is seconds since boot, not UTC. This satisfies the wire format but limits anti-replay protection. A GPS or NTP time source would provide a meaningful timestamp.
+- **Private key in firmware image.** The key is compiled into the binary via Kconfig. Do not commit `sdkconfig` to source control when a production key is configured. Use `sdkconfig.dev` for development (see below).
+- **Static key per build.** Key rotation requires a reflash. NVS-based provisioning is a planned future improvement.
+
+### Key generation
+
+Generate an Ed25519 private key (PKCS#8 PEM format):
+
+```sh
+openssl genpkey -algorithm ed25519 -out device.pem
+```
+
+Extract the public key:
+
+```sh
+openssl pkey -in device.pem -pubout -out device_pub.pem
+openssl pkey -in device.pem -pubout -outform DER | tail -c 32 | xxd -p -c 32
+```
+
+The public key is also logged at INFO level on every startup:
+
+```
+I (312) remoteid_auth: Ed25519 authentication enabled, public key: <64 hex chars>
+```
+
+To generate a CSR for CA signing (replace `UAS-ID-HERE` with the drone's UAS ID):
+
+```sh
+openssl req -new -key device.pem -out device.csr \
+  -subj "/CN=UAS-ID-HERE/O=YourOrganisation"
+```
+
+Submit `device.csr` to your CA. Register the signed certificate in your verification service registry, keyed by UAS ID.
+
+### Configuration
+
+Format the private key for Kconfig (one line, `\n` as separator):
+
+```sh
+awk 'NF {printf "%s\\n", $0}' device.pem
+```
+
+Enable authentication and set the key in `menuconfig` under **ESP Remote ID → Authentication**, or set directly in `sdkconfig`:
+
+```
+CONFIG_REMOTEID_AUTH_ED25519=y
+CONFIG_REMOTEID_AUTH_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYD...\n-----END PRIVATE KEY-----\n"
+```
+
+### Development
+
+A dummy key and placeholder identity are provided in `sdkconfig.dev` for local development without a real CA. Apply it with:
+
+```sh
+export SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.dev"
+idf.py build
+```
+
+Never flash `sdkconfig.dev` credentials to a production device.
+
+### BLE schedule with authentication
+
+When authentication is enabled the BLE schedule extends from 8 to 12 slots (3 seconds per full cycle at 250 ms per slot). Auth pages 0–3 are appended after the base message rotation. The Location and System messages are refreshed immediately before signing so auth pages always cover the most recent state.

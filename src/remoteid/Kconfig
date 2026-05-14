@@ -431,4 +431,44 @@ config REMOTEID_WIFI_NAN_TX_INTERVAL_MS
 
 endif # REMOTEID_TRANSPORT_WIFI_NAN
 
+menu "Authentication"
+
+config REMOTEID_AUTH_ED25519
+    bool "Enable Ed25519 message set authentication (F3411-22a)"
+    default n
+    help
+        Signs the four-message set (BasicID + Location + System + OperatorID)
+        using Ed25519 and broadcasts the 64-byte signature across four
+        authentication pages per ASTM F3411-22a section 10.5.
+
+        The private key must be set in REMOTEID_AUTH_PRIVATE_KEY_PEM (PKCS#8
+        PEM format). The corresponding public key is derived at startup and
+        logged once. Register it with your CA or verification service.
+
+config REMOTEID_AUTH_PRIVATE_KEY_PEM
+    string "Ed25519 private key (PKCS#8 PEM)"
+    depends on REMOTEID_AUTH_ED25519
+    default ""
+    help
+        The Ed25519 private key in PKCS#8 PEM format, with newlines
+        replaced by \n. Only Ed25519 keys are accepted — P-256/ECDSA
+        keys will be rejected at startup.
+
+        Generate a key:
+          openssl genpkey -algorithm ed25519 -out device.pem
+
+        Format for this field (one line, \n as separator):
+          awk 'NF {printf "%s\\n", $0}' device.pem
+
+        The key should look like:
+          -----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYD...\n-----END PRIVATE KEY-----\n
+
+        The corresponding public key is logged at INFO level on startup.
+        Register it with your CA or verification service.
+
+        Keep this value secret. Do not commit sdkconfig to source control
+        when a real key is configured. Use sdkconfig.dev for development.
+
+endmenu
+
 endmenu
