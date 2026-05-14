@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "remoteid/ble.c"
         "remoteid/encode.c"
+        "remoteid/indicator.c"
         "remoteid/led.c"
         "remoteid/mavlink.c"
         "remoteid/model.c"
@@ -14,6 +15,7 @@ idf_component_register(
     REQUIRES
         bt
         esp_driver_gpio
+        esp_driver_rmt
         esp_driver_uart
         esp_event
         esp_netif

@@ -114,10 +114,30 @@ BLE is enabled by default. Wi-Fi Beacon and Wi-Fi NAN are available but disabled
 | `Wi-Fi Beacon SSID` | `OpenDroneID` | SSID embedded only in Beacon frames. Receivers should parse the vendor IE, not rely on this SSID. |
 | `Wi-Fi Beacon TX interval` | `1000 ms` | Wi-Fi Beacon transmission cadence. |
 | `Wi-Fi NAN TX interval` | `1000 ms` | Wi-Fi NAN sync/action transmission cadence. |
+| `Enable onboard RGB status indicator` | Disabled | Drives a board-mounted addressable RGB LED as a local status indicator. |
+| `Onboard RGB LED data GPIO` | `48` | Physical ESP32-S3 GPIO connected to the onboard WS2812/SK6812-style RGB LED data input. The UICPAL ESP32-S3-N16R8 board variant used by this firmware uses GPIO48; other variants may use GPIO33 or another pin. |
+| `Onboard RGB LED brightness` | `16%` | Scales the local indicator LED brightness. |
+| `Onboard RGB operational flash pattern` | `Drone beacon 1 Hz short flash` | Pattern used after transports have started and valid Remote ID identity is available. |
 | `TX status LED GPIO` | Disabled (`-1`) | Optional simple GPIO LED that pulses after each successful BLE, Wi-Fi Beacon, or Wi-Fi NAN transmission. |
 | `TX status LED is active high` | Enabled | Disable for active-low LEDs. |
 | `TX status LED pulse duration` | `40 ms` | Duration of each transmission pulse. |
 | `Startup delay before transmissions` | `10000 ms` | Development delay before starting BLE/Wi-Fi so there is time to attach the serial monitor. |
+
+### Onboard RGB Indicator
+
+The onboard RGB indicator is intended for local module status, not for driving external aviation lights. It uses the ESP32-S3 RMT peripheral to drive one addressable RGB LED, typically a WS2812/SK6812 device on the devboard. The UICPAL ESP32-S3-N16R8 board variant used by this firmware uses GPIO48 for the onboard RGB LED.
+
+Status behavior:
+
+| Firmware state | Onboard RGB behavior |
+|----------------|----------------------|
+| Waiting for Remote ID readiness or transport startup | Amber slow blink |
+| Operational | Configured green flash pattern |
+| Error state | Red fast blink |
+
+Operational means the firmware has started its enabled transports and the state store has a valid Basic ID/UAS ID plus Operator ID. This prevents the indicator from showing the operational pattern while placeholder identity values are still blocking broadcasts.
+
+The RGB data pin is not a suitable transistor trigger for external lights because addressable LEDs use a high-speed encoded data waveform. External compliant light trigger GPIOs will be configured separately in a later feature.
 
 ### MAVLink OpenDroneID Input
 
@@ -205,6 +225,7 @@ The ESP-IDF component is split so transports can share the same Remote ID state 
 - `src/remoteid/remoteid/types.h`: internal Remote ID state and message bundle types.
 - `src/remoteid/remoteid/model.c`: builds the current aircraft/operator/location state from configuration.
 - `src/remoteid/remoteid/encode.c`: converts internal state into official OpenDroneID messages.
+- `src/remoteid/remoteid/indicator.c`: optional onboard RGB status and operational-pattern indicator.
 - `src/remoteid/remoteid/led.c`: optional TX status LED pulse handling.
 - `src/remoteid/remoteid/store.c`: queue-backed state store and readiness gate shared by all producers/transports.
 - `src/remoteid/remoteid/mavlink.c`: optional UART MAVLink OpenDroneID input producer.

@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "remoteid/ble.h"
+#include "remoteid/indicator.h"
 #include "remoteid/led.h"
 #include "remoteid/mavlink.h"
 #include "remoteid/model.h"
@@ -22,6 +23,7 @@ void app_main(void)
 {
     static remoteid_state_t state;
 
+    ESP_ERROR_CHECK(remoteid_indicator_init());
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
     ESP_ERROR_CHECK(remoteid_model_init(&state));
@@ -44,4 +46,6 @@ void app_main(void)
 #if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON || CONFIG_REMOTEID_TRANSPORT_WIFI_NAN
     ESP_ERROR_CHECK(remoteid_wifi_start());
 #endif
+
+    remoteid_indicator_mark_transports_started();
 }
