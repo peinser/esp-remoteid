@@ -1,29 +1,52 @@
 #include "esp_bt.h"
 #include "esp_err.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nvs_flash.h"
 #include "remoteid/ble.h"
-#include "remoteid/led.h"
+#include "remoteid/indicator.h"
+#include "remoteid/lighting.h"
+#include "remoteid/mavlink.h"
 #include "remoteid/model.h"
+#include "remoteid/store.h"
 #include "remoteid/wifi.h"
 #include "sdkconfig.h"
+
+static const char *TAG = "remoteid_main";
+
+#ifndef CONFIG_REMOTEID_STARTUP_DELAY_MS
+#define CONFIG_REMOTEID_STARTUP_DELAY_MS 10000
+#endif
 
 void app_main(void)
 {
     static remoteid_state_t state;
 
-    // TODO DO NOT FORGET When remoteid_state_t is no longer static (e.g., when fed through MAVLlink or other channels)
-    // ensure access is thread-safe of check how freertos handles it.
-
+    ESP_ERROR_CHECK(remoteid_indicator_init());
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
     ESP_ERROR_CHECK(remoteid_model_init(&state));
-    ESP_ERROR_CHECK(remoteid_led_init());
+    ESP_ERROR_CHECK(remoteid_store_start(&state));
+    ESP_ERROR_CHECK(remoteid_lighting_init());
+
+#if CONFIG_REMOTEID_MAVLINK_INPUT
+    ESP_ERROR_CHECK(remoteid_mavlink_start());
+#endif
+
+    if (CONFIG_REMOTEID_STARTUP_DELAY_MS > 0) {
+        ESP_LOGI(TAG, "delaying Remote ID transport startup for %d ms", CONFIG_REMOTEID_STARTUP_DELAY_MS);
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_REMOTEID_STARTUP_DELAY_MS));
+    }
 
 #if CONFIG_REMOTEID_TRANSPORT_BLE
-    ESP_ERROR_CHECK(remoteid_ble_start(&state));
+    ESP_ERROR_CHECK(remoteid_ble_start());
 #endif
 
 #if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON || CONFIG_REMOTEID_TRANSPORT_WIFI_NAN
-    ESP_ERROR_CHECK(remoteid_wifi_start(&state));
+    ESP_ERROR_CHECK(remoteid_wifi_start());
 #endif
+
+    remoteid_indicator_mark_transports_started();
+    remoteid_lighting_mark_transports_started();
 }

@@ -11,16 +11,19 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "host/ble_hs.h"
-#include "led.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "opendroneid.h"
 #include "sdkconfig.h"
+#include "store.h"
 
 #define REMOTEID_SERVICE_DATA_LEN (2 + ODID_MESSAGE_SIZE)
 #define REMOTEID_LEGACY_ADV_DATA_LEN (1 + 1 + 2 + REMOTEID_SERVICE_DATA_LEN)
 #define REMOTEID_ADV_INTERVAL_100_MS 0x00a0
-#define REMOTEID_ADV_ROTATION_MS 250
+
+#ifndef CONFIG_REMOTEID_BLE_TX_INTERVAL_MS
+#define CONFIG_REMOTEID_BLE_TX_INTERVAL_MS 250
+#endif
 
 static const char *TAG = "remoteid_ble";
 
@@ -35,7 +38,6 @@ static const remoteid_message_index_t s_message_schedule[] = {
     REMOTEID_MESSAGE_LOCATION,
 };
 
-static const remoteid_state_t *s_state;
 static remoteid_message_bundle_t s_bundle;
 static uint8_t s_message_counters[ODID_MSG_COUNTER_AMOUNT];
 static size_t s_schedule_index;
@@ -109,17 +111,35 @@ static esp_err_t advertise_message(const uint8_t message[ODID_MESSAGE_SIZE])
     }
 
     s_message_counters[counter_index]++;
-    remoteid_led_pulse();
     return ESP_OK;
 }
 
 static void remoteid_ble_task(void *arg)
 {
     (void)arg;
+    remoteid_state_t snapshot;
+
+    ESP_LOGI(TAG, "BLE transport waiting for Remote ID Basic ID and Operator ID");
+    ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
+    ESP_LOGI(TAG, "BLE transport identity ready, starting advertisements");
 
     while (true) {
+        if (!remoteid_store_is_ready()) {
+            ble_gap_adv_stop();
+            ESP_LOGW(TAG, "BLE transport paused until Remote ID identity is ready again");
+            ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
+        }
+
+        ESP_ERROR_CHECK(remoteid_store_get_snapshot(&snapshot));
+        esp_err_t static_rc = remoteid_encode_static_messages(&snapshot, &s_bundle);
+        if (static_rc != ESP_OK) {
+            ESP_LOGE(TAG, "failed to encode static messages");
+            vTaskDelay(pdMS_TO_TICKS(CONFIG_REMOTEID_BLE_TX_INTERVAL_MS));
+            continue;
+        }
+
         remoteid_message_index_t message_index = s_message_schedule[s_schedule_index];
-        esp_err_t rc = remoteid_encode_dynamic_message(s_state, &s_bundle, message_index);
+        esp_err_t rc = remoteid_encode_dynamic_message(&snapshot, &s_bundle, message_index);
         if (rc != ESP_OK) {
             ESP_LOGE(TAG, "failed to encode dynamic message %u, broadcasting stale message", message_index);
         }
@@ -130,7 +150,7 @@ static void remoteid_ble_task(void *arg)
         }
 
         s_schedule_index = (s_schedule_index + 1) % (sizeof(s_message_schedule) / sizeof(s_message_schedule[0]));
-        vTaskDelay(pdMS_TO_TICKS(REMOTEID_ADV_ROTATION_MS));
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_REMOTEID_BLE_TX_INTERVAL_MS));
     }
 }
 
@@ -155,11 +175,8 @@ static void nimble_host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
-esp_err_t remoteid_ble_start(const remoteid_state_t *state)
+esp_err_t remoteid_ble_start(void)
 {
-    s_state = state;
-
-    ESP_RETURN_ON_ERROR(remoteid_encode_static_messages(s_state, &s_bundle), TAG, "build static ODID messages");
     ESP_RETURN_ON_ERROR(nimble_port_init(), TAG, "initialize NimBLE");
     ESP_RETURN_ON_ERROR(configure_ble_tx_power(), TAG, "configure BLE TX power");
 

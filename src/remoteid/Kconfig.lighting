@@ -1,0 +1,306 @@
+menu "External GPIO lighting outputs"
+
+config REMOTEID_LIGHTING_ENABLE
+    bool "Enable external GPIO lighting outputs"
+    default n
+    help
+        Enables up to five simple GPIO outputs for external lighting triggers.
+        These outputs are intended to drive transistor, MOSFET, relay driver,
+        or opto-isolator inputs. Do not drive aircraft lights directly from an
+        ESP32 GPIO pin.
+
+if REMOTEID_LIGHTING_ENABLE
+
+menu "Lighting output 0"
+
+config REMOTEID_LIGHTING_OUTPUT0_ENABLE
+    bool "Enable output 0"
+    default n
+
+config REMOTEID_LIGHTING_OUTPUT0_GPIO
+    int "Output 0 GPIO"
+    default -1
+    range -1 48
+    depends on REMOTEID_LIGHTING_OUTPUT0_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT0_ACTIVE_HIGH
+    bool "Output 0 active high"
+    default y
+    depends on REMOTEID_LIGHTING_OUTPUT0_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT0_OPEN_DRAIN
+    bool "Output 0 open drain"
+    default n
+    depends on REMOTEID_LIGHTING_OUTPUT0_ENABLE
+
+choice REMOTEID_LIGHTING_OUTPUT0_PATTERN
+    prompt "Output 0 operational pattern"
+    default REMOTEID_LIGHTING_OUTPUT0_PATTERN_BEACON_1HZ_SHORT
+    depends on REMOTEID_LIGHTING_OUTPUT0_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT0_PATTERN_SOLID
+    bool "Solid on"
+
+config REMOTEID_LIGHTING_OUTPUT0_PATTERN_BEACON_1HZ_SHORT
+    bool "Beacon 1 Hz short flash"
+
+config REMOTEID_LIGHTING_OUTPUT0_PATTERN_BEACON_1HZ_50
+    bool "Beacon 1 Hz 50% duty"
+
+config REMOTEID_LIGHTING_OUTPUT0_PATTERN_STROBE_SINGLE
+    bool "Single strobe"
+
+config REMOTEID_LIGHTING_OUTPUT0_PATTERN_STROBE_DOUBLE
+    bool "Double strobe"
+
+config REMOTEID_LIGHTING_OUTPUT0_PATTERN_STROBE_TRIPLE
+    bool "Triple strobe"
+
+config REMOTEID_LIGHTING_OUTPUT0_PATTERN_FAST_STROBE
+    bool "Fast strobe"
+
+endchoice
+
+config REMOTEID_LIGHTING_OUTPUT0_PHASE_MS
+    int "Output 0 pattern phase offset (ms)"
+    default 0
+    range 0 60000
+    depends on REMOTEID_LIGHTING_OUTPUT0_ENABLE
+
+endmenu
+
+menu "Lighting output 1"
+
+config REMOTEID_LIGHTING_OUTPUT1_ENABLE
+    bool "Enable output 1"
+    default n
+
+config REMOTEID_LIGHTING_OUTPUT1_GPIO
+    int "Output 1 GPIO"
+    default -1
+    range -1 48
+    depends on REMOTEID_LIGHTING_OUTPUT1_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT1_ACTIVE_HIGH
+    bool "Output 1 active high"
+    default y
+    depends on REMOTEID_LIGHTING_OUTPUT1_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT1_OPEN_DRAIN
+    bool "Output 1 open drain"
+    default n
+    depends on REMOTEID_LIGHTING_OUTPUT1_ENABLE
+
+choice REMOTEID_LIGHTING_OUTPUT1_PATTERN
+    prompt "Output 1 operational pattern"
+    default REMOTEID_LIGHTING_OUTPUT1_PATTERN_BEACON_1HZ_SHORT
+    depends on REMOTEID_LIGHTING_OUTPUT1_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT1_PATTERN_SOLID
+    bool "Solid on"
+
+config REMOTEID_LIGHTING_OUTPUT1_PATTERN_BEACON_1HZ_SHORT
+    bool "Beacon 1 Hz short flash"
+
+config REMOTEID_LIGHTING_OUTPUT1_PATTERN_BEACON_1HZ_50
+    bool "Beacon 1 Hz 50% duty"
+
+config REMOTEID_LIGHTING_OUTPUT1_PATTERN_STROBE_SINGLE
+    bool "Single strobe"
+
+config REMOTEID_LIGHTING_OUTPUT1_PATTERN_STROBE_DOUBLE
+    bool "Double strobe"
+
+config REMOTEID_LIGHTING_OUTPUT1_PATTERN_STROBE_TRIPLE
+    bool "Triple strobe"
+
+config REMOTEID_LIGHTING_OUTPUT1_PATTERN_FAST_STROBE
+    bool "Fast strobe"
+
+endchoice
+
+config REMOTEID_LIGHTING_OUTPUT1_PHASE_MS
+    int "Output 1 pattern phase offset (ms)"
+    default 0
+    range 0 60000
+    depends on REMOTEID_LIGHTING_OUTPUT1_ENABLE
+
+endmenu
+
+menu "Lighting output 2"
+
+config REMOTEID_LIGHTING_OUTPUT2_ENABLE
+    bool "Enable output 2"
+    default n
+
+config REMOTEID_LIGHTING_OUTPUT2_GPIO
+    int "Output 2 GPIO"
+    default -1
+    range -1 48
+    depends on REMOTEID_LIGHTING_OUTPUT2_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT2_ACTIVE_HIGH
+    bool "Output 2 active high"
+    default y
+    depends on REMOTEID_LIGHTING_OUTPUT2_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT2_OPEN_DRAIN
+    bool "Output 2 open drain"
+    default n
+    depends on REMOTEID_LIGHTING_OUTPUT2_ENABLE
+
+choice REMOTEID_LIGHTING_OUTPUT2_PATTERN
+    prompt "Output 2 operational pattern"
+    default REMOTEID_LIGHTING_OUTPUT2_PATTERN_BEACON_1HZ_SHORT
+    depends on REMOTEID_LIGHTING_OUTPUT2_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT2_PATTERN_SOLID
+    bool "Solid on"
+
+config REMOTEID_LIGHTING_OUTPUT2_PATTERN_BEACON_1HZ_SHORT
+    bool "Beacon 1 Hz short flash"
+
+config REMOTEID_LIGHTING_OUTPUT2_PATTERN_BEACON_1HZ_50
+    bool "Beacon 1 Hz 50% duty"
+
+config REMOTEID_LIGHTING_OUTPUT2_PATTERN_STROBE_SINGLE
+    bool "Single strobe"
+
+config REMOTEID_LIGHTING_OUTPUT2_PATTERN_STROBE_DOUBLE
+    bool "Double strobe"
+
+config REMOTEID_LIGHTING_OUTPUT2_PATTERN_STROBE_TRIPLE
+    bool "Triple strobe"
+
+config REMOTEID_LIGHTING_OUTPUT2_PATTERN_FAST_STROBE
+    bool "Fast strobe"
+
+endchoice
+
+config REMOTEID_LIGHTING_OUTPUT2_PHASE_MS
+    int "Output 2 pattern phase offset (ms)"
+    default 0
+    range 0 60000
+    depends on REMOTEID_LIGHTING_OUTPUT2_ENABLE
+
+endmenu
+
+menu "Lighting output 3"
+
+config REMOTEID_LIGHTING_OUTPUT3_ENABLE
+    bool "Enable output 3"
+    default n
+
+config REMOTEID_LIGHTING_OUTPUT3_GPIO
+    int "Output 3 GPIO"
+    default -1
+    range -1 48
+    depends on REMOTEID_LIGHTING_OUTPUT3_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT3_ACTIVE_HIGH
+    bool "Output 3 active high"
+    default y
+    depends on REMOTEID_LIGHTING_OUTPUT3_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT3_OPEN_DRAIN
+    bool "Output 3 open drain"
+    default n
+    depends on REMOTEID_LIGHTING_OUTPUT3_ENABLE
+
+choice REMOTEID_LIGHTING_OUTPUT3_PATTERN
+    prompt "Output 3 operational pattern"
+    default REMOTEID_LIGHTING_OUTPUT3_PATTERN_BEACON_1HZ_SHORT
+    depends on REMOTEID_LIGHTING_OUTPUT3_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT3_PATTERN_SOLID
+    bool "Solid on"
+
+config REMOTEID_LIGHTING_OUTPUT3_PATTERN_BEACON_1HZ_SHORT
+    bool "Beacon 1 Hz short flash"
+
+config REMOTEID_LIGHTING_OUTPUT3_PATTERN_BEACON_1HZ_50
+    bool "Beacon 1 Hz 50% duty"
+
+config REMOTEID_LIGHTING_OUTPUT3_PATTERN_STROBE_SINGLE
+    bool "Single strobe"
+
+config REMOTEID_LIGHTING_OUTPUT3_PATTERN_STROBE_DOUBLE
+    bool "Double strobe"
+
+config REMOTEID_LIGHTING_OUTPUT3_PATTERN_STROBE_TRIPLE
+    bool "Triple strobe"
+
+config REMOTEID_LIGHTING_OUTPUT3_PATTERN_FAST_STROBE
+    bool "Fast strobe"
+
+endchoice
+
+config REMOTEID_LIGHTING_OUTPUT3_PHASE_MS
+    int "Output 3 pattern phase offset (ms)"
+    default 0
+    range 0 60000
+    depends on REMOTEID_LIGHTING_OUTPUT3_ENABLE
+
+endmenu
+
+menu "Lighting output 4"
+
+config REMOTEID_LIGHTING_OUTPUT4_ENABLE
+    bool "Enable output 4"
+    default n
+
+config REMOTEID_LIGHTING_OUTPUT4_GPIO
+    int "Output 4 GPIO"
+    default -1
+    range -1 48
+    depends on REMOTEID_LIGHTING_OUTPUT4_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT4_ACTIVE_HIGH
+    bool "Output 4 active high"
+    default y
+    depends on REMOTEID_LIGHTING_OUTPUT4_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT4_OPEN_DRAIN
+    bool "Output 4 open drain"
+    default n
+    depends on REMOTEID_LIGHTING_OUTPUT4_ENABLE
+
+choice REMOTEID_LIGHTING_OUTPUT4_PATTERN
+    prompt "Output 4 operational pattern"
+    default REMOTEID_LIGHTING_OUTPUT4_PATTERN_BEACON_1HZ_SHORT
+    depends on REMOTEID_LIGHTING_OUTPUT4_ENABLE
+
+config REMOTEID_LIGHTING_OUTPUT4_PATTERN_SOLID
+    bool "Solid on"
+
+config REMOTEID_LIGHTING_OUTPUT4_PATTERN_BEACON_1HZ_SHORT
+    bool "Beacon 1 Hz short flash"
+
+config REMOTEID_LIGHTING_OUTPUT4_PATTERN_BEACON_1HZ_50
+    bool "Beacon 1 Hz 50% duty"
+
+config REMOTEID_LIGHTING_OUTPUT4_PATTERN_STROBE_SINGLE
+    bool "Single strobe"
+
+config REMOTEID_LIGHTING_OUTPUT4_PATTERN_STROBE_DOUBLE
+    bool "Double strobe"
+
+config REMOTEID_LIGHTING_OUTPUT4_PATTERN_STROBE_TRIPLE
+    bool "Triple strobe"
+
+config REMOTEID_LIGHTING_OUTPUT4_PATTERN_FAST_STROBE
+    bool "Fast strobe"
+
+endchoice
+
+config REMOTEID_LIGHTING_OUTPUT4_PHASE_MS
+    int "Output 4 pattern phase offset (ms)"
+    default 0
+    range 0 60000
+    depends on REMOTEID_LIGHTING_OUTPUT4_ENABLE
+
+endmenu
+
+endif # REMOTEID_LIGHTING_ENABLE
+
+endmenu

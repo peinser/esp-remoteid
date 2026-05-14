@@ -68,19 +68,50 @@ esp_err_t remoteid_model_init(remoteid_state_t *state)
     strncpy(state->operator_id, REMOTEID_OPERATOR_ID, sizeof(state->operator_id) - 1);
     state->id_type = configured_id_type();
     state->ua_type = configured_ua_type();
-    state->eu_category = configured_eu_category();
-    state->eu_class = configured_eu_class();
+
+    state->speed_horizontal = (float)INV_SPEED_H;
+    state->speed_vertical   = (float)INV_SPEED_V;
+    state->direction        = (float)INV_DIR;
+    state->height           = (float)INV_ALT;
+    state->height_type      = ODID_HEIGHT_REF_OVER_TAKEOFF;
+    state->horiz_acc        = ODID_HOR_ACC_UNKNOWN;
+    state->vert_acc         = ODID_VER_ACC_UNKNOWN;
+    state->baro_acc         = ODID_VER_ACC_UNKNOWN;
+    state->speed_acc        = ODID_SPEED_ACC_UNKNOWN;
+    state->ts_acc           = ODID_TIME_ACC_UNKNOWN;
+    state->timestamp        = -1.0f;
+
+    state->operator_location_type = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
+    state->area_count             = 1;
+    state->area_radius            = 0;
+    state->area_ceiling_m         = (float)INV_ALT;
+    state->area_floor_m           = (float)INV_ALT;
+    state->classification_type    = ODID_CLASSIFICATION_TYPE_EU;
+    state->eu_category            = configured_eu_category();
+    state->eu_class               = configured_eu_class();
 
 #if CONFIG_REMOTEID_HAS_POSITION
-    state->has_position = true;
-    state->latitude = REMOTEID_TAKEOFF_LATITUDE;
-    state->longitude = REMOTEID_TAKEOFF_LONGITUDE;
-    state->altitude_m = REMOTEID_TAKEOFF_ALTITUDE_M;
+    state->has_position          = true;
+    state->latitude              = REMOTEID_TAKEOFF_LATITUDE;
+    state->longitude             = REMOTEID_TAKEOFF_LONGITUDE;
+    state->altitude_geo_m        = REMOTEID_TAKEOFF_ALTITUDE_M;
+    state->altitude_baro_m       = REMOTEID_TAKEOFF_ALTITUDE_M;
+    state->status                = ODID_STATUS_AIRBORNE;
+    state->has_operator_position = true;
+    state->operator_latitude     = REMOTEID_TAKEOFF_LATITUDE;
+    state->operator_longitude    = REMOTEID_TAKEOFF_LONGITUDE;
+    state->operator_altitude_geo_m = REMOTEID_TAKEOFF_ALTITUDE_M;
 #else
-    state->has_position = false;
-    state->latitude = 0.0;
-    state->longitude = 0.0;
-    state->altitude_m = (float)INV_ALT;
+    state->has_position          = false;
+    state->latitude              = 0.0;
+    state->longitude             = 0.0;
+    state->altitude_geo_m        = (float)INV_ALT;
+    state->altitude_baro_m       = (float)INV_ALT;
+    state->status                = ODID_STATUS_UNDECLARED;
+    state->has_operator_position = false;
+    state->operator_latitude     = 0.0;
+    state->operator_longitude    = 0.0;
+    state->operator_altitude_geo_m = (float)INV_ALT;
 #endif
 
     return ESP_OK;
