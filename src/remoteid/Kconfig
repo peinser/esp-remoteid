@@ -43,6 +43,89 @@ config REMOTEID_OPERATOR_ID
         is broadcast in the Operator ID message. Must be 20 characters or
         fewer.
 
+config REMOTEID_STARTUP_DELAY_MS
+    int "Startup delay before transmissions (ms)"
+    default 10000
+    range 0 60000
+    help
+        Delay after boot before BLE or Wi-Fi Remote ID transmissions start.
+        This is useful during development because it leaves time to attach the
+        serial monitor after flashing or reset.
+
+config REMOTEID_MAVLINK_INPUT
+    bool "Enable MAVLink OpenDroneID UART input"
+    default n
+    help
+        Parse incoming MAVLink v2 OpenDroneID messages from a flight controller
+        or companion computer and feed them into the Remote ID state store.
+        The first supported messages are OPEN_DRONE_ID_BASIC_ID,
+        OPEN_DRONE_ID_OPERATOR_ID, and OPEN_DRONE_ID_LOCATION.
+
+if REMOTEID_MAVLINK_INPUT
+
+config REMOTEID_MAVLINK_UART_NUM
+    int "MAVLink UART number"
+    default 1
+    range 0 2
+    help
+        ESP32-S3 UART peripheral used for MAVLink input. This selects the
+        hardware UART block, not the physical pins. The ESP32-S3 GPIO matrix
+        lets UART signals be routed to many different pins, so configure the RX
+        and optional TX GPIOs below to match your board wiring.
+
+config REMOTEID_MAVLINK_BAUD
+    int "MAVLink UART baud rate"
+    default 57600
+    range 1200 115200
+    help
+        Baud rate for the MAVLink input UART. Common flight-controller values
+        are 57600, 115200, and 921600.
+
+config REMOTEID_MAVLINK_RX_GPIO
+    int "MAVLink UART RX GPIO"
+    default -1
+    range -1 48
+    help
+        Physical ESP32-S3 GPIO used as the selected UART's RX signal. Connect
+        this pin to the flight controller or companion computer MAVLink TX pin.
+        This must be set to a valid GPIO when MAVLink input is enabled. Do not
+        assume the UART number automatically selects a usable board pin.
+
+config REMOTEID_MAVLINK_TX_GPIO
+    int "MAVLink UART TX GPIO"
+    default -1
+    range -1 48
+    help
+        Optional physical ESP32-S3 GPIO used as the selected UART's TX signal.
+        Connect this pin to the flight controller or companion computer MAVLink
+        RX pin only if bidirectional UART wiring is needed. Current firmware
+        only requires receive-only MAVLink input, so leave this at -1 unless
+        you intentionally want the TX signal routed.
+
+config REMOTEID_MAVLINK_TASK_STACK
+    int "MAVLink input task stack size"
+    default 4096
+    range 3072 8192
+
+config REMOTEID_MAVLINK_TARGET_SYSTEM
+    int "Accepted MAVLink target system"
+    default 0
+    range 0 255
+    help
+        If non-zero, only OpenDroneID messages addressed to this target system
+        or broadcast target 0 are accepted. Leave as 0 to accept all systems.
+
+config REMOTEID_MAVLINK_TARGET_COMPONENT
+    int "Accepted MAVLink target component"
+    default 0
+    range 0 255
+    help
+        If non-zero, only OpenDroneID messages addressed to this target
+        component or broadcast target 0 are accepted. Leave as 0 to accept all
+        components.
+
+endif # REMOTEID_MAVLINK_INPUT
+
 choice REMOTEID_ID_TYPE
     prompt "UAS ID type"
     default REMOTEID_ID_TYPE_CAA_REG
@@ -217,6 +300,17 @@ config REMOTEID_BLE_TX_POWER_P9
 
 endchoice
 
+config REMOTEID_BLE_TX_INTERVAL_MS
+    int "BLE advertisement rotation interval (ms)"
+    default 250
+    range 100 5000
+    depends on REMOTEID_TRANSPORT_BLE
+    help
+        Interval between BLE advertisement payload rotations. The default
+        rotates through the message schedule fast enough to keep Location at
+        approximately 1 Hz while still periodically advertising Basic ID,
+        System, and Operator ID.
+
 config REMOTEID_TX_LED_GPIO
     int "TX status LED GPIO"
     default -1
@@ -254,14 +348,6 @@ config REMOTEID_WIFI_CHANNEL
         6 is the standard/default channel for ASTM F3411 Wi-Fi Beacon/NAN on
         2.4 GHz. Select a different channel only when permitted and required.
 
-config REMOTEID_WIFI_INTERVAL_MS
-    int "Wi-Fi Remote ID transmit interval (ms)"
-    default 1000
-    range 100 5000
-    help
-        Interval between OpenDroneID Wi-Fi transmissions. Use 1000 ms for a
-        1 Hz Remote ID cadence.
-
 config REMOTEID_WIFI_TX_POWER_DBM
     int "Wi-Fi TX power (dBm)"
     default 20
@@ -283,6 +369,26 @@ config REMOTEID_WIFI_BEACON_SSID
         bytes or fewer. Remote ID receivers should parse the vendor IE, not
         rely on this SSID.
 
+config REMOTEID_WIFI_BEACON_TX_INTERVAL_MS
+    int "Wi-Fi Beacon TX interval (ms)"
+    default 1000
+    range 100 5000
+    help
+        Interval between OpenDroneID Wi-Fi Beacon transmissions. The default
+        1000 ms gives a 1 Hz Remote ID Beacon cadence.
+
 endif # REMOTEID_TRANSPORT_WIFI_BEACON
+
+if REMOTEID_TRANSPORT_WIFI_NAN
+
+config REMOTEID_WIFI_NAN_TX_INTERVAL_MS
+    int "Wi-Fi NAN TX interval (ms)"
+    default 1000
+    range 100 5000
+    help
+        Interval between OpenDroneID Wi-Fi NAN sync/action transmissions. The
+        default 1000 ms gives a 1 Hz Remote ID NAN cadence.
+
+endif # REMOTEID_TRANSPORT_WIFI_NAN
 
 endmenu

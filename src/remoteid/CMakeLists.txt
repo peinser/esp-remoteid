@@ -4,7 +4,9 @@ idf_component_register(
         "remoteid/ble.c"
         "remoteid/encode.c"
         "remoteid/led.c"
+        "remoteid/mavlink.c"
         "remoteid/model.c"
+        "remoteid/store.c"
         "remoteid/wifi.c"
     INCLUDE_DIRS
         "."
@@ -12,10 +14,15 @@ idf_component_register(
     REQUIRES
         bt
         esp_driver_gpio
+        esp_driver_uart
         esp_event
         esp_netif
         esp_timer
         esp_wifi
         nvs_flash
         opendroneid_core
+)
+
+target_include_directories(${COMPONENT_LIB} PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../third_party/mavlink_c_library_v2"
 )
