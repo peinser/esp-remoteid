@@ -33,57 +33,42 @@ static void fill_basic_id_data(const remoteid_state_t *state, ODID_BasicID_data 
 
 static void fill_location_data(const remoteid_state_t *state, ODID_Location_data *data)
 {
-    if (state->has_position) {
-        data->Status = ODID_STATUS_AIRBORNE;
-        data->Direction = 0.0f;
-        data->SpeedHorizontal = 0.0f;
-        data->SpeedVertical = 0.0f;
-        data->Latitude = state->latitude;
-        data->Longitude = state->longitude;
-        data->AltitudeBaro = state->altitude_m;
-        data->AltitudeGeo = state->altitude_m;
-        data->HeightType = ODID_HEIGHT_REF_OVER_TAKEOFF;
-        data->Height = 0.0f;
-        data->HorizAccuracy = ODID_HOR_ACC_UNKNOWN;
-        data->VertAccuracy = ODID_VER_ACC_UNKNOWN;
-        data->BaroAccuracy = ODID_VER_ACC_UNKNOWN;
-        data->SpeedAccuracy = ODID_SPEED_ACC_UNKNOWN;
-        data->TSAccuracy = ODID_TIME_ACC_UNKNOWN;
-        data->TimeStamp = (float)(uptime_seconds() % MAX_TIMESTAMP);
-    } else {
-        data->Status = ODID_STATUS_UNDECLARED;
-        data->Direction = (float)INV_DIR;
-        data->SpeedHorizontal = (float)INV_SPEED_H;
-        data->SpeedVertical = (float)INV_SPEED_V;
-        data->Latitude = 0.0;
-        data->Longitude = 0.0;
-        data->AltitudeBaro = (float)INV_ALT;
-        data->AltitudeGeo = (float)INV_ALT;
-        data->HeightType = ODID_HEIGHT_REF_OVER_TAKEOFF;
-        data->Height = (float)INV_ALT;
-        data->HorizAccuracy = ODID_HOR_ACC_UNKNOWN;
-        data->VertAccuracy = ODID_VER_ACC_UNKNOWN;
-        data->BaroAccuracy = ODID_VER_ACC_UNKNOWN;
-        data->SpeedAccuracy = ODID_SPEED_ACC_UNKNOWN;
-        data->TSAccuracy = ODID_TIME_ACC_UNKNOWN;
-        data->TimeStamp = (float)INV_TIMESTAMP;
-    }
+    data->Status          = state->status;
+    data->Direction       = state->direction;
+    data->SpeedHorizontal = state->speed_horizontal;
+    data->SpeedVertical   = state->speed_vertical;
+    data->Latitude        = state->latitude;
+    data->Longitude       = state->longitude;
+    data->AltitudeBaro    = state->altitude_baro_m;
+    data->AltitudeGeo     = state->altitude_geo_m;
+    data->HeightType      = state->height_type;
+    data->Height          = state->height;
+    data->HorizAccuracy   = state->horiz_acc;
+    data->VertAccuracy    = state->vert_acc;
+    data->BaroAccuracy    = state->baro_acc;
+    data->SpeedAccuracy   = state->speed_acc;
+    data->TSAccuracy      = state->ts_acc;
+    data->TimeStamp       = state->timestamp >= 0.0f
+                            ? state->timestamp
+                            : (float)(uptime_seconds() % MAX_TIMESTAMP);
 }
 
 static void fill_system_data(const remoteid_state_t *state, ODID_System_data *data)
 {
-    data->OperatorLocationType = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
-    data->ClassificationType = ODID_CLASSIFICATION_TYPE_EU;
-    data->OperatorLatitude = state->has_position ? state->latitude : 0.0;
-    data->OperatorLongitude = state->has_position ? state->longitude : 0.0;
-    data->AreaCount = 1;
-    data->AreaRadius = 0;
-    data->AreaCeiling = (float)INV_ALT;
-    data->AreaFloor = (float)INV_ALT;
-    data->CategoryEU = state->eu_category;
-    data->ClassEU = state->eu_class;
-    data->OperatorAltitudeGeo = state->has_position ? state->altitude_m : (float)INV_ALT;
-    data->Timestamp = uptime_seconds();
+    data->OperatorLocationType = state->operator_location_type;
+    data->ClassificationType   = state->classification_type;
+    data->OperatorLatitude     = state->has_operator_position ? state->operator_latitude  : 0.0;
+    data->OperatorLongitude    = state->has_operator_position ? state->operator_longitude : 0.0;
+    data->AreaCount            = state->area_count;
+    data->AreaRadius           = state->area_radius;
+    data->AreaCeiling          = state->area_ceiling_m;
+    data->AreaFloor            = state->area_floor_m;
+    data->CategoryEU           = state->eu_category;
+    data->ClassEU              = state->eu_class;
+    data->OperatorAltitudeGeo  = state->has_operator_position
+                                 ? state->operator_altitude_geo_m
+                                 : (float)INV_ALT;
+    data->Timestamp            = uptime_seconds();
 }
 
 static void fill_operator_id_data(const remoteid_state_t *state, ODID_OperatorID_data *data)

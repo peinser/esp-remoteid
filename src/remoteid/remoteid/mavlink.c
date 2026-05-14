@@ -17,8 +17,9 @@
 #include "freertos/task.h"
 #include "store.h"
 
-#define REMOTEID_MAVLINK_BUF_SIZE 256
-#define REMOTEID_MAVLINK_QUEUE_SIZE 0
+#define REMOTEID_MAVLINK_BUF_SIZE      256
+#define REMOTEID_MAVLINK_QUEUE_SIZE    0
+#define REMOTEID_MAVLINK_TASK_PRIORITY 5
 
 static const char *TAG = "remoteid_mavlink";
 
@@ -115,23 +116,69 @@ static void submit_location(const mavlink_message_t *message)
     }
 
     bool has_position = msg.latitude != 0 || msg.longitude != 0;
-    float altitude_m = msg.altitude_geodetic;
-    if (altitude_m <= -999.0f) {
-        altitude_m = msg.altitude_barometric;
-    }
 
     remoteid_store_update_t update = {
-        .type = REMOTEID_STORE_UPDATE_LOCATION,
-        .data.location.has_position = has_position,
-        .data.location.latitude = (double)msg.latitude / 10000000.0,
-        .data.location.longitude = (double)msg.longitude / 10000000.0,
-        .data.location.altitude_m = altitude_m,
+        .type                           = REMOTEID_STORE_UPDATE_LOCATION,
+        .data.location.has_position     = has_position,
+        .data.location.latitude         = (double)msg.latitude  / 10000000.0,
+        .data.location.longitude        = (double)msg.longitude / 10000000.0,
+        .data.location.altitude_geo_m   = msg.altitude_geodetic  <= (float)INV_ALT ? (float)INV_ALT : msg.altitude_geodetic,
+        .data.location.altitude_baro_m  = msg.altitude_barometric <= (float)INV_ALT ? (float)INV_ALT : msg.altitude_barometric,
+        .data.location.status           = (ODID_status_t)msg.status,
+        .data.location.speed_horizontal = msg.speed_horizontal >= (float)INV_SPEED_H ? (float)INV_SPEED_H : msg.speed_horizontal,
+        .data.location.speed_vertical   = msg.speed_vertical   >= (float)INV_SPEED_V ? (float)INV_SPEED_V : msg.speed_vertical,
+        .data.location.direction        = msg.direction >= 36100
+                                          ? (float)INV_DIR
+                                          : msg.direction / 100.0f,
+        .data.location.height           = msg.height <= (float)INV_ALT ? (float)INV_ALT : msg.height,
+        .data.location.height_type      = (ODID_Height_reference_t)msg.height_reference,
+        .data.location.horiz_acc        = (ODID_Horizontal_accuracy_t)msg.horizontal_accuracy,
+        .data.location.vert_acc         = (ODID_Vertical_accuracy_t)msg.vertical_accuracy,
+        .data.location.baro_acc         = (ODID_Vertical_accuracy_t)msg.barometer_accuracy,
+        .data.location.speed_acc        = (ODID_Speed_accuracy_t)msg.speed_accuracy,
+        .data.location.ts_acc           = (ODID_Timestamp_accuracy_t)msg.timestamp_accuracy,
+        .data.location.timestamp        = msg.timestamp >= (float)MAX_TIMESTAMP ? -1.0f : msg.timestamp,
     };
 
     if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
-        ESP_LOGD(TAG, "accepted MAVLink Location (has_position=%d)", has_position);
+        ESP_LOGD(TAG, "accepted MAVLink Location (has_position=%d status=%u)", has_position, msg.status);
     } else {
         ESP_LOGW(TAG, "dropped MAVLink Location update: state queue full");
+    }
+}
+
+static void submit_system(const mavlink_message_t *message)
+{
+    mavlink_open_drone_id_system_t msg = { 0 };
+    mavlink_msg_open_drone_id_system_decode(message, &msg);
+
+    if (!target_matches(msg.target_system, msg.target_component)) {
+        ESP_LOGD(TAG, "ignored System for target system=%u component=%u", msg.target_system, msg.target_component);
+        return;
+    }
+
+    bool has_operator_position = msg.operator_latitude != 0 || msg.operator_longitude != 0;
+
+    remoteid_store_update_t update = {
+        .type                               = REMOTEID_STORE_UPDATE_SYSTEM,
+        .data.system.has_operator_position  = has_operator_position,
+        .data.system.operator_latitude      = (double)msg.operator_latitude  / 10000000.0,
+        .data.system.operator_longitude     = (double)msg.operator_longitude / 10000000.0,
+        .data.system.operator_altitude_geo_m = msg.operator_altitude_geo <= (float)INV_ALT ? (float)INV_ALT : msg.operator_altitude_geo,
+        .data.system.operator_location_type = (ODID_operator_location_type_t)msg.operator_location_type,
+        .data.system.area_count             = msg.area_count,
+        .data.system.area_radius            = msg.area_radius,
+        .data.system.area_ceiling_m         = msg.area_ceiling,
+        .data.system.area_floor_m           = msg.area_floor,
+        .data.system.classification_type    = (ODID_classification_type_t)msg.classification_type,
+        .data.system.eu_category            = (ODID_category_EU_t)msg.category_eu,
+        .data.system.eu_class               = (ODID_class_EU_t)msg.class_eu,
+    };
+
+    if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
+        ESP_LOGD(TAG, "accepted MAVLink System (has_operator_position=%d)", has_operator_position);
+    } else {
+        ESP_LOGW(TAG, "dropped MAVLink System update: state queue full");
     }
 }
 
@@ -146,6 +193,9 @@ static void handle_message(const mavlink_message_t *message)
         break;
     case MAVLINK_MSG_ID_OPEN_DRONE_ID_LOCATION:
         submit_location(message);
+        break;
+    case MAVLINK_MSG_ID_OPEN_DRONE_ID_SYSTEM:
+        submit_system(message);
         break;
     default:
         break;
@@ -204,7 +254,7 @@ esp_err_t remoteid_mavlink_start(void)
                         TAG, "configure MAVLink UART pins");
 
     if (xTaskCreate(remoteid_mavlink_task, "remoteid_mavlink", CONFIG_REMOTEID_MAVLINK_TASK_STACK,
-                    NULL, 7, NULL) != pdPASS) {
+                    NULL, REMOTEID_MAVLINK_TASK_PRIORITY, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create MAVLink input task");
         return ESP_ERR_NO_MEM;
     }

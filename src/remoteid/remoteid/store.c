@@ -73,11 +73,40 @@ static void apply_update_locked(const remoteid_store_update_t *update)
         ESP_LOGI(TAG, "updated Operator ID from input source (valid=%d)", s_operator_id_valid);
         break;
     case REMOTEID_STORE_UPDATE_LOCATION:
-        s_state.has_position = update->data.location.has_position;
-        s_state.latitude = update->data.location.latitude;
-        s_state.longitude = update->data.location.longitude;
-        s_state.altitude_m = update->data.location.altitude_m;
-        ESP_LOGD(TAG, "updated Location from input source (has_position=%d)", s_state.has_position);
+        s_state.has_position      = update->data.location.has_position;
+        s_state.latitude          = update->data.location.latitude;
+        s_state.longitude         = update->data.location.longitude;
+        s_state.altitude_geo_m    = update->data.location.altitude_geo_m;
+        s_state.altitude_baro_m   = update->data.location.altitude_baro_m;
+        s_state.status            = update->data.location.status;
+        s_state.speed_horizontal  = update->data.location.speed_horizontal;
+        s_state.speed_vertical    = update->data.location.speed_vertical;
+        s_state.direction         = update->data.location.direction;
+        s_state.height            = update->data.location.height;
+        s_state.height_type       = update->data.location.height_type;
+        s_state.horiz_acc         = update->data.location.horiz_acc;
+        s_state.vert_acc          = update->data.location.vert_acc;
+        s_state.baro_acc          = update->data.location.baro_acc;
+        s_state.speed_acc         = update->data.location.speed_acc;
+        s_state.ts_acc            = update->data.location.ts_acc;
+        s_state.timestamp         = update->data.location.timestamp;
+        ESP_LOGD(TAG, "updated Location from input source (has_position=%d status=%d)",
+                 s_state.has_position, s_state.status);
+        break;
+    case REMOTEID_STORE_UPDATE_SYSTEM:
+        s_state.has_operator_position    = update->data.system.has_operator_position;
+        s_state.operator_latitude        = update->data.system.operator_latitude;
+        s_state.operator_longitude       = update->data.system.operator_longitude;
+        s_state.operator_altitude_geo_m  = update->data.system.operator_altitude_geo_m;
+        s_state.operator_location_type   = update->data.system.operator_location_type;
+        s_state.area_count               = update->data.system.area_count;
+        s_state.area_radius              = update->data.system.area_radius;
+        s_state.area_ceiling_m           = update->data.system.area_ceiling_m;
+        s_state.area_floor_m             = update->data.system.area_floor_m;
+        s_state.classification_type      = update->data.system.classification_type;
+        s_state.eu_category              = update->data.system.eu_category;
+        s_state.eu_class                 = update->data.system.eu_class;
+        ESP_LOGD(TAG, "updated System from input source");
         break;
     }
 
