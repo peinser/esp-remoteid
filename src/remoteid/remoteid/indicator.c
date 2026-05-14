@@ -8,6 +8,7 @@
 
 #if CONFIG_REMOTEID_INDICATOR_RGB_ENABLE
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -17,24 +18,19 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "pattern.h"
 #include "store.h"
 
 #define REMOTEID_INDICATOR_RMT_RESOLUTION_HZ 10000000
 #define REMOTEID_INDICATOR_TASK_STACK 3072
 #define REMOTEID_INDICATOR_TASK_PRIORITY 4
 #define REMOTEID_INDICATOR_LED_BYTES 3
-#define REMOTEID_INDICATOR_UNUSED __attribute__((unused))
 
 typedef struct remoteid_indicator_color {
     uint8_t red;
     uint8_t green;
     uint8_t blue;
 } remoteid_indicator_color_t;
-
-typedef struct remoteid_indicator_step {
-    bool on;
-    uint16_t duration_ms;
-} remoteid_indicator_step_t;
 
 typedef enum remoteid_indicator_mode {
     REMOTEID_INDICATOR_MODE_WAITING,
@@ -46,39 +42,17 @@ static const char *TAG = "remoteid_indicator";
 
 static rmt_channel_handle_t s_rmt_channel;
 static rmt_encoder_handle_t s_rmt_encoder;
-static volatile bool s_transports_started;
-static volatile bool s_error;
+static _Atomic bool s_transports_started;
+static _Atomic bool s_error;
 
-static const remoteid_indicator_step_t s_status_waiting[] = {
+static const remoteid_pattern_step_t s_status_waiting[] = {
     { true, 250 },
     { false, 1750 },
 };
 
-static const remoteid_indicator_step_t s_status_error[] = {
+static const remoteid_pattern_step_t s_status_error[] = {
     { true, 100 },
     { false, 100 },
-};
-
-static const remoteid_indicator_step_t s_pattern_beacon_short[] REMOTEID_INDICATOR_UNUSED = {
-    { true, 100 },
-    { false, 900 },
-};
-
-static const remoteid_indicator_step_t s_pattern_beacon_50[] REMOTEID_INDICATOR_UNUSED = {
-    { true, 500 },
-    { false, 500 },
-};
-
-static const remoteid_indicator_step_t s_pattern_strobe_single[] REMOTEID_INDICATOR_UNUSED = {
-    { true, 60 },
-    { false, 1940 },
-};
-
-static const remoteid_indicator_step_t s_pattern_strobe_double[] REMOTEID_INDICATOR_UNUSED = {
-    { true, 60 },
-    { false, 80 },
-    { true, 60 },
-    { false, 1800 },
 };
 
 static uint8_t scale_channel(uint8_t value)
@@ -112,37 +86,39 @@ static void set_rgb_logged(remoteid_indicator_color_t color)
     }
 }
 
-static const remoteid_indicator_step_t *operational_pattern(size_t *count)
+static const remoteid_pattern_step_t *operational_pattern(size_t *count)
 {
-#if CONFIG_REMOTEID_INDICATOR_PATTERN_DRONE_BEACON_1HZ_50
-    *count = sizeof(s_pattern_beacon_50) / sizeof(s_pattern_beacon_50[0]);
-    return s_pattern_beacon_50;
+#if CONFIG_REMOTEID_INDICATOR_PATTERN_SOLID
+    return remoteid_pattern_steps(REMOTEID_PATTERN_SOLID, count);
+#elif CONFIG_REMOTEID_INDICATOR_PATTERN_DRONE_BEACON_1HZ_50
+    return remoteid_pattern_steps(REMOTEID_PATTERN_BEACON_1HZ_50, count);
 #elif CONFIG_REMOTEID_INDICATOR_PATTERN_STROBE_SINGLE
-    *count = sizeof(s_pattern_strobe_single) / sizeof(s_pattern_strobe_single[0]);
-    return s_pattern_strobe_single;
+    return remoteid_pattern_steps(REMOTEID_PATTERN_STROBE_SINGLE, count);
 #elif CONFIG_REMOTEID_INDICATOR_PATTERN_STROBE_DOUBLE
-    *count = sizeof(s_pattern_strobe_double) / sizeof(s_pattern_strobe_double[0]);
-    return s_pattern_strobe_double;
+    return remoteid_pattern_steps(REMOTEID_PATTERN_STROBE_DOUBLE, count);
+#elif CONFIG_REMOTEID_INDICATOR_PATTERN_STROBE_TRIPLE
+    return remoteid_pattern_steps(REMOTEID_PATTERN_STROBE_TRIPLE, count);
+#elif CONFIG_REMOTEID_INDICATOR_PATTERN_FAST_STROBE
+    return remoteid_pattern_steps(REMOTEID_PATTERN_FAST_STROBE, count);
 #else
-    *count = sizeof(s_pattern_beacon_short) / sizeof(s_pattern_beacon_short[0]);
-    return s_pattern_beacon_short;
+    return remoteid_pattern_steps(REMOTEID_PATTERN_BEACON_1HZ_SHORT, count);
 #endif
 }
 
 static remoteid_indicator_mode_t current_mode(void)
 {
-    if (s_error) {
+    if (atomic_load_explicit(&s_error, memory_order_acquire)) {
         return REMOTEID_INDICATOR_MODE_ERROR;
     }
-    if (s_transports_started && remoteid_store_is_ready()) {
+    if (atomic_load_explicit(&s_transports_started, memory_order_acquire) && remoteid_store_is_ready()) {
         return REMOTEID_INDICATOR_MODE_OPERATIONAL;
     }
     return REMOTEID_INDICATOR_MODE_WAITING;
 }
 
-static const remoteid_indicator_step_t *pattern_for_mode(remoteid_indicator_mode_t mode,
-                                                         size_t *count,
-                                                         remoteid_indicator_color_t *color)
+static const remoteid_pattern_step_t *pattern_for_mode(remoteid_indicator_mode_t mode,
+                                                       size_t *count,
+                                                       remoteid_indicator_color_t *color)
 {
     if (mode == REMOTEID_INDICATOR_MODE_ERROR) {
         *count = sizeof(s_status_error) / sizeof(s_status_error[0]);
@@ -169,7 +145,7 @@ static void remoteid_indicator_task(void *arg)
         size_t step_count = 0;
         remoteid_indicator_color_t color = { 0 };
         remoteid_indicator_mode_t mode = current_mode();
-        const remoteid_indicator_step_t *pattern = pattern_for_mode(mode, &step_count, &color);
+        const remoteid_pattern_step_t *pattern = pattern_for_mode(mode, &step_count, &color);
 
         for (size_t i = 0; i < step_count; i++) {
             set_rgb_logged(pattern[i].on ? color : (remoteid_indicator_color_t){ 0 });
@@ -232,12 +208,12 @@ esp_err_t remoteid_indicator_init(void)
 
 void remoteid_indicator_mark_transports_started(void)
 {
-    s_transports_started = true;
+    atomic_store_explicit(&s_transports_started, true, memory_order_release);
 }
 
 void remoteid_indicator_set_error(void)
 {
-    s_error = true;
+    atomic_store_explicit(&s_error, true, memory_order_release);
 }
 
 #else

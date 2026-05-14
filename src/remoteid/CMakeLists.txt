@@ -4,9 +4,10 @@ idf_component_register(
         "remoteid/ble.c"
         "remoteid/encode.c"
         "remoteid/indicator.c"
-        "remoteid/led.c"
+        "remoteid/lighting.c"
         "remoteid/mavlink.c"
         "remoteid/model.c"
+        "remoteid/pattern.c"
         "remoteid/store.c"
         "remoteid/wifi.c"
     INCLUDE_DIRS

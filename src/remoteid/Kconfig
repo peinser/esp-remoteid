@@ -350,6 +350,9 @@ choice REMOTEID_INDICATOR_OPERATIONAL_PATTERN
         Pattern used by the onboard RGB LED after Remote ID is operational.
         External aviation lighting outputs will be configured separately later.
 
+config REMOTEID_INDICATOR_PATTERN_SOLID
+    bool "Solid on"
+
 config REMOTEID_INDICATOR_PATTERN_DRONE_BEACON_1HZ_SHORT
     bool "Drone beacon 1 Hz short flash"
 
@@ -362,35 +365,17 @@ config REMOTEID_INDICATOR_PATTERN_STROBE_SINGLE
 config REMOTEID_INDICATOR_PATTERN_STROBE_DOUBLE
     bool "Double strobe"
 
+config REMOTEID_INDICATOR_PATTERN_STROBE_TRIPLE
+    bool "Triple strobe"
+
+config REMOTEID_INDICATOR_PATTERN_FAST_STROBE
+    bool "Fast strobe"
+
 endchoice
 
 endif # REMOTEID_INDICATOR_RGB_ENABLE
 
-config REMOTEID_TX_LED_GPIO
-    int "TX status LED GPIO"
-    default -1
-    range -1 48
-    help
-        GPIO for a simple status LED that pulses on each successful BLE or
-        Wi-Fi Remote ID transmission. Set to -1 to disable. For boards with
-        an addressable RGB LED, this option only works if the LED can be driven
-        as a simple GPIO.
-
-config REMOTEID_TX_LED_ACTIVE_HIGH
-    bool "TX status LED is active high"
-    default y
-    depends on REMOTEID_TX_LED_GPIO >= 0
-    help
-        Disable this if the configured LED turns on when the GPIO is driven
-        low.
-
-config REMOTEID_TX_LED_PULSE_MS
-    int "TX status LED pulse duration (ms)"
-    default 40
-    range 1 1000
-    depends on REMOTEID_TX_LED_GPIO >= 0
-    help
-        Duration of the LED pulse after each successful transmission.
+rsource "Kconfig.lighting"
 
 if REMOTEID_TRANSPORT_WIFI_BEACON || REMOTEID_TRANSPORT_WIFI_NAN
 

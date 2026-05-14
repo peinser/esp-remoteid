@@ -6,7 +6,7 @@
 #include "nvs_flash.h"
 #include "remoteid/ble.h"
 #include "remoteid/indicator.h"
-#include "remoteid/led.h"
+#include "remoteid/lighting.h"
 #include "remoteid/mavlink.h"
 #include "remoteid/model.h"
 #include "remoteid/store.h"
@@ -28,7 +28,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
     ESP_ERROR_CHECK(remoteid_model_init(&state));
     ESP_ERROR_CHECK(remoteid_store_start(&state));
-    ESP_ERROR_CHECK(remoteid_led_init());
+    ESP_ERROR_CHECK(remoteid_lighting_init());
 
 #if CONFIG_REMOTEID_MAVLINK_INPUT
     ESP_ERROR_CHECK(remoteid_mavlink_start());
@@ -48,4 +48,5 @@ void app_main(void)
 #endif
 
     remoteid_indicator_mark_transports_started();
+    remoteid_lighting_mark_transports_started();
 }

@@ -11,7 +11,6 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "led.h"
 #include "opendroneid.h"
 #include "sdkconfig.h"
 #include "store.h"
@@ -178,7 +177,6 @@ static esp_err_t send_remoteid_beacon(void)
     ESP_RETURN_ON_ERROR(esp_wifi_80211_tx(WIFI_IF_AP, frame, len, true), TAG, "transmit Wi-Fi Beacon frame");
     s_beacon_send_counter++;
     log_transmitted_message_types("Wi-Fi Beacon", &uas_data);
-    remoteid_led_pulse();
 
     return ESP_OK;
 }
@@ -213,7 +211,6 @@ static esp_err_t send_remoteid_nan(void)
     ESP_RETURN_ON_ERROR(esp_wifi_80211_tx(WIFI_IF_STA, frame, len, true), TAG, "transmit Wi-Fi NAN action frame");
     s_nan_send_counter++;
     log_transmitted_message_types("Wi-Fi NAN", &uas_data);
-    remoteid_led_pulse();
 
     return ESP_OK;
 }

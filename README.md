@@ -118,9 +118,7 @@ BLE is enabled by default. Wi-Fi Beacon and Wi-Fi NAN are available but disabled
 | `Onboard RGB LED data GPIO` | `48` | Physical ESP32-S3 GPIO connected to the onboard WS2812/SK6812-style RGB LED data input. The UICPAL ESP32-S3-N16R8 board variant used by this firmware uses GPIO48; other variants may use GPIO33 or another pin. |
 | `Onboard RGB LED brightness` | `16%` | Scales the local indicator LED brightness. |
 | `Onboard RGB operational flash pattern` | `Drone beacon 1 Hz short flash` | Pattern used after transports have started and valid Remote ID identity is available. |
-| `TX status LED GPIO` | Disabled (`-1`) | Optional simple GPIO LED that pulses after each successful BLE, Wi-Fi Beacon, or Wi-Fi NAN transmission. |
-| `TX status LED is active high` | Enabled | Disable for active-low LEDs. |
-| `TX status LED pulse duration` | `40 ms` | Duration of each transmission pulse. |
+| `Enable external GPIO lighting outputs` | Disabled | Enables up to five simple GPIO outputs for external light trigger circuits. |
 | `Startup delay before transmissions` | `10000 ms` | Development delay before starting BLE/Wi-Fi so there is time to attach the serial monitor. |
 
 ### Onboard RGB Indicator
@@ -137,7 +135,44 @@ Status behavior:
 
 Operational means the firmware has started its enabled transports and the state store has a valid Basic ID/UAS ID plus Operator ID. This prevents the indicator from showing the operational pattern while placeholder identity values are still blocking broadcasts.
 
-The RGB data pin is not a suitable transistor trigger for external lights because addressable LEDs use a high-speed encoded data waveform. External compliant light trigger GPIOs will be configured separately in a later feature.
+The RGB data pin is not a suitable transistor trigger for external lights because addressable LEDs use a high-speed encoded data waveform. Use the external GPIO lighting outputs for that purpose.
+
+### External GPIO Lighting
+
+The external GPIO lighting module provides five independently configurable GPIO outputs. These outputs are logic-level triggers intended for transistor, MOSFET, relay-driver, or opto-isolator inputs. Do not power aircraft lights directly from ESP32 GPIO pins.
+
+Each output has its own configuration:
+
+| Setting | Description |
+|---------|-------------|
+| `Enable output N` | Enables this lighting output. |
+| `Output N GPIO` | Physical ESP32-S3 GPIO used as the trigger signal. |
+| `Output N active high` | Controls whether logical ON drives the pin high or low. |
+| `Output N open drain` | Uses open-drain output mode for compatible external circuits. |
+| `Output N operational pattern` | Pattern used when Remote ID transports are started and identity is ready. |
+| `Output N pattern phase offset` | Staggers matching patterns across multiple outputs. |
+
+Outputs remain off until valid Basic ID/UAS ID and Operator ID are available and enabled transports have started.
+
+Available operational patterns:
+
+- `Solid on`
+- `Beacon 1 Hz short flash`
+- `Beacon 1 Hz 50% duty`
+- `Single strobe`
+- `Double strobe`
+- `Triple strobe`
+- `Fast strobe`
+
+Example setup:
+
+```text
+Output 0: GPIO 4, Double strobe, phase 0 ms
+Output 1: GPIO 5, Double strobe, phase 500 ms
+Output 2: GPIO 6, Beacon 1 Hz short flash
+Output 3: disabled
+Output 4: disabled
+```
 
 ### MAVLink OpenDroneID Input
 
@@ -182,6 +217,8 @@ Before flashing for any actual operation:
 - [ ] Set **EU operation category** to **Open** (or your authorised category)
 - [ ] Optionally enable **Broadcast a known takeoff position** and enter your takeoff coordinates
 
+Note: BLE and Wi-Fi transports wait for the store readiness gate before transmitting. The gate requires a usable Basic ID/UAS ID and Operator ID, either from Kconfig or from runtime producers such as MAVLink.
+
 ## Prerequisites
 
 - ESP32-S3 board
@@ -216,24 +253,6 @@ The default ESP serial device inside the container is `/dev/ttyESP32`. Override 
 make flash ESPPORT=/dev/ttyACM0
 ```
 
-## Architecture
-
-The ESP-IDF component is split so transports can share the same Remote ID state and OpenDroneID encoding:
-
-- `src/remoteid/main.c`: application entrypoint and top-level startup.
-- `src/remoteid/remoteid/config.h`: compile-time configuration constants from Kconfig.
-- `src/remoteid/remoteid/types.h`: internal Remote ID state and message bundle types.
-- `src/remoteid/remoteid/model.c`: builds the current aircraft/operator/location state from configuration.
-- `src/remoteid/remoteid/encode.c`: converts internal state into official OpenDroneID messages.
-- `src/remoteid/remoteid/indicator.c`: optional onboard RGB status and operational-pattern indicator.
-- `src/remoteid/remoteid/led.c`: optional TX status LED pulse handling.
-- `src/remoteid/remoteid/store.c`: queue-backed state store and readiness gate shared by all producers/transports.
-- `src/remoteid/remoteid/mavlink.c`: optional UART MAVLink OpenDroneID input producer.
-- `src/remoteid/remoteid/ble.c`: NimBLE lifecycle, TX power, and BLE legacy advertisement rotation.
-- `src/remoteid/remoteid/wifi.c`: ESP-IDF Wi-Fi setup and OpenDroneID Wi-Fi Beacon/NAN transmission.
-
-BLE and Wi-Fi transports wait for the store readiness gate before transmitting. The gate requires a usable Basic ID/UAS ID and Operator ID, either from Kconfig or from runtime producers such as MAVLink.
-
 ## Transmit Power
 
 OpenDroneID BLE reception range is not guaranteed by a fixed distance in the EU documents; practical range depends on transmitter power, receiver hardware, antenna design, enclosure, orientation, and RF environment. This firmware therefore makes BLE advertising TX power explicit and configurable.
@@ -246,9 +265,9 @@ CONFIG_REMOTEID_BLE_TX_POWER_P9=y
 
 Change it with `make menuconfig` under `ESP Remote ID -> BLE advertising TX power`, or by editing `sdkconfig.defaults` before regenerating `sdkconfig`. Keep the configured level within the limits of your board, antenna, enclosure, and local RF rules.
 
-## macOS Serial Bridge
+## (macOS) Serial Bridge
 
-Docker Desktop on macOS does not expose `/dev/cu.*` serial devices directly to Linux containers. Use `socat` to bridge the ESP32-S3 USB serial device from the host into the devcontainer.
+Docker on macOS does not expose `/dev/cu.*` serial devices directly to Linux containers. Use `socat` to bridge the ESP32-S3 USB serial device from the host into the devcontainer.
 
 On the macOS host:
 

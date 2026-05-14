@@ -11,7 +11,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "host/ble_hs.h"
-#include "led.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "opendroneid.h"
@@ -112,7 +111,6 @@ static esp_err_t advertise_message(const uint8_t message[ODID_MESSAGE_SIZE])
     }
 
     s_message_counters[counter_index]++;
-    remoteid_led_pulse();
     return ESP_OK;
 }
 
