@@ -2,22 +2,33 @@
 """
 Provision an Ed25519 private key into the NVS partition of a Remote ID device.
 
-Generates an NVS binary from the supplied PKCS#8 PEM file and writes it to the
-device's NVS partition via serial. Must be run before first boot when flash
-encryption is enabled, as the plaintext NVS binary is rejected after that.
+Two provisioning methods are available:
+
+  Serial (before first boot / flash encryption):
+    Generates an NVS binary from the supplied PKCS#8 PEM file and writes it to
+    the device's NVS partition via serial. Must be run before first boot when
+    flash encryption is enabled, as the plaintext NVS binary is rejected after.
+
+  OTA HTTP server (while device is running in OTA mode):
+    Posts the key directly to the running OTA management server over Wi-Fi.
+    The device must be in OTA mode (REMOTEID_OTA_ENABLE + trigger asserted).
 
 Usage:
     python .dev/scripts/provision_key.py device.pem
     python .dev/scripts/provision_key.py device.pem --port /dev/ttyUSB0
-    python .dev/scripts/provision_key.py device.pem --output nvs.bin  # generate only, do not flash
+    python .dev/scripts/provision_key.py device.pem --output nvs.bin
+    python .dev/scripts/provision_key.py device.pem --ota-url http://192.168.4.1
 """
 
 import argparse
 import csv
+import json
 import os
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 
 NVS_NAMESPACE     = "remoteid_auth"
 NVS_KEY           = "private_key"
@@ -97,6 +108,33 @@ def flash_nvs_partition(bin_path, port):
         die(f"parttool.py failed:\n{result.stderr.strip()}")
 
 
+def provision_via_ota(pem, ota_url):
+    payload = {
+        "namespace": NVS_NAMESPACE,
+        "key": NVS_KEY,
+        "type": "string",
+        "value": pem,
+    }
+    data = json.dumps(payload).encode()
+    url = ota_url.rstrip("/") + "/nvs"
+
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode()
+            print(f"OTA server response: {body}")
+    except urllib.error.HTTPError as e:
+        die(f"OTA server error {e.code}: {e.read().decode()}")
+    except urllib.error.URLError as e:
+        die(f"OTA server unreachable at {url}: {e.reason}\n"
+            "  Make sure the device is in OTA mode and you are connected to its AP.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Provision an Ed25519 private key into the device NVS partition.",
@@ -114,16 +152,24 @@ def main():
         metavar="FILE",
         help="Write NVS binary to FILE and exit without flashing",
     )
+    parser.add_argument(
+        "--ota-url",
+        metavar="URL",
+        help="Provision via OTA HTTP server (e.g. http://192.168.4.1) instead of serial",
+    )
     args = parser.parse_args()
 
     pem = read_pem(args.key_file)
 
-    if args.output:
+    if args.ota_url:
+        print(f"Provisioning key via OTA server at {args.ota_url} ...")
+        provision_via_ota(pem, args.ota_url)
+        print("Private key provisioned successfully via OTA.")
+    elif args.output:
         generate_nvs_binary(pem, args.output)
         print(f"NVS binary written to {args.output}")
         print(f"Flash with: parttool.py -p <PORT> write_partition --partition-name nvs --input {args.output}")
     else:
-
         with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
             bin_path = f.name
 

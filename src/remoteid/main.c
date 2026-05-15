@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "ota/ota.h"
 #include "remoteid/auth.h"
 #include "remoteid/ble.h"
 #include "remoteid/indicator.h"
@@ -27,6 +28,7 @@ void app_main(void)
     ESP_ERROR_CHECK(remoteid_indicator_init());
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+    ESP_ERROR_CHECK(remoteid_ota_check_and_run());
     ESP_ERROR_CHECK(remoteid_model_init(&state));
     ESP_ERROR_CHECK(remoteid_store_start(&state));
     ESP_ERROR_CHECK(remoteid_lighting_init());

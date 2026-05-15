@@ -445,6 +445,82 @@ config REMOTEID_FLASH_ENC_RELEASE_CONFIRM
         CONFIG_FLASH_ENCRYPTION_MODE_RELEASE is set. Leaving this blank while
         Release mode is enabled will cause an explicit build failure.
 
+menu "OTA update server"
+
+config REMOTEID_OTA_ENABLE
+    bool "Enable OTA update server"
+    default n
+    help
+        When triggered, the device starts a Wi-Fi access point and a lightweight
+        HTTP management server. All normal Remote ID operations are suspended
+        while the OTA server is running. The device restarts after any management
+        operation (firmware update, factory reset, rollback, or NVS write) to
+        resume normal operation.
+
+        Trigger methods are configured below. The default trigger is a GPIO
+        that must be held low at boot. A Kconfig option is also available to
+        always enter OTA mode on every boot for development purposes.
+
+if REMOTEID_OTA_ENABLE
+
+config REMOTEID_OTA_TRIGGER_GPIO
+    int "OTA trigger GPIO (active-low, -1 to disable)"
+    default -1
+    range -1 48
+    help
+        Physical ESP32-S3 GPIO sampled at boot to decide whether to enter OTA
+        mode. Connect a momentary push-button between this pin and GND; an
+        internal pull-up is enabled automatically. Hold the button during reset
+        to enter OTA mode.
+
+        Set to -1 to disable GPIO triggering. In that case OTA mode is only
+        entered when REMOTEID_OTA_ALWAYS_ENTER is enabled.
+
+config REMOTEID_OTA_ALWAYS_ENTER
+    bool "Always enter OTA mode on boot (development only)"
+    default n
+    help
+        Skip the GPIO check and always start the OTA HTTP server. Normal Remote
+        ID operations never start. Intended for development and bench testing of
+        the OTA server only. Do not enable in production firmware.
+
+config REMOTEID_OTA_AP_SSID
+    string "OTA Wi-Fi AP SSID"
+    default "RemoteID-OTA"
+    help
+        SSID broadcast by the device while the OTA server is running. Connect
+        to this network from a laptop or phone to reach the management server
+        at http://192.168.4.1.
+
+config REMOTEID_OTA_AP_PASSWORD
+    string "OTA Wi-Fi AP password"
+    default ""
+    help
+        WPA2 passphrase for the OTA access point. Must be at least 8 characters
+        to enable WPA2; leave blank (fewer than 8 characters) for an open AP.
+        Use a strong passphrase in any environment where unauthorized users
+        could connect — the HTTP server has no additional authentication layer.
+
+config REMOTEID_OTA_AP_CHANNEL
+    int "OTA Wi-Fi AP channel"
+    default 6
+    range 1 13
+    help
+        2.4 GHz Wi-Fi channel used for the OTA access point. Change this only
+        if channel 6 conflicts with nearby infrastructure during maintenance.
+
+config REMOTEID_OTA_HTTP_PORT
+    int "OTA HTTP server port"
+    default 80
+    range 1 65535
+    help
+        TCP port the OTA HTTP server listens on. The default port 80 allows
+        plain http://192.168.4.1 URLs without a port suffix.
+
+endif # REMOTEID_OTA_ENABLE
+
+endmenu
+
 menu "Authentication"
 
 config REMOTEID_AUTH_ED25519

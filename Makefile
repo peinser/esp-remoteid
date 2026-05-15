@@ -2,8 +2,9 @@ ESPPORT ?= /dev/ttyESP32
 HOST_SERIAL ?= /dev/cu.usbserial-XXXX
 SOCAT_PORT ?= 54321
 BAUD ?= 115200
+OTA_HOST ?= http://192.168.4.1
 
-.PHONY: help set-target reset menuconfig build flash flash-idf encrypted-flash nvs-flash provision-key monitor monitor-raw probe clean bridge-host bridge-container host-setup-socat
+.PHONY: help set-target reset menuconfig build flash flash-idf encrypted-flash nvs-flash provision-key ota-status ota-flash ota-provision-key ota-rollback ota-factory-reset monitor monitor-raw probe clean bridge-host bridge-container host-setup-socat
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -36,6 +37,29 @@ nvs-flash: ## Write nvs.bin to the NVS partition (run before first boot to provi
 provision-key: ## Provision private key into device NVS (KEY_FILE=path/to/device.pem)
 	@test -n "$(KEY_FILE)" || (echo "Usage: make provision-key KEY_FILE=path/to/device.pem" && exit 1)
 	python .dev/scripts/provision_key.py $(KEY_FILE) --port $(ESPPORT)
+
+ota-status: ## Query OTA server status (OTA_HOST=http://192.168.4.1)
+	curl -s $(OTA_HOST)/status | python3 -m json.tool
+
+ota-flash: build ## Upload firmware to OTA server (OTA_HOST=http://192.168.4.1)
+	curl -X POST $(OTA_HOST)/update \
+	    --data-binary @build/$(shell python3 -c "import json; d=json.load(open('build/project_description.json')); print(d['app_bin'])") \
+	    -H "Content-Type: application/octet-stream" \
+	    -o -
+
+ota-provision-key: ## Provision private key via OTA server (KEY_FILE=path/to/device.pem OTA_HOST=...)
+	@test -n "$(KEY_FILE)" || (echo "Usage: make ota-provision-key KEY_FILE=path/to/device.pem" && exit 1)
+	python .dev/scripts/provision_key.py $(KEY_FILE) --ota-url $(OTA_HOST)
+
+ota-rollback: ## Roll back to previous firmware via OTA server (OTA_HOST=http://192.168.4.1)
+	curl -X POST $(OTA_HOST)/rollback \
+	    -H "Content-Type: application/json" \
+	    -d '{"confirm":"ROLLBACK"}' | python3 -m json.tool
+
+ota-factory-reset: ## Erase NVS via OTA server (OTA_HOST=http://192.168.4.1)
+	curl -X POST $(OTA_HOST)/factory-reset \
+	    -H "Content-Type: application/json" \
+	    -d '{"confirm":"FACTORY-RESET"}' | python3 -m json.tool
 
 monitor: ## Open ESP-IDF serial monitor via ESPPORT
 	idf.py -p $(ESPPORT) monitor

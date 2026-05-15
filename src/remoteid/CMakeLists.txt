@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "ota/ota.c"
         "remoteid/auth.c"
         "remoteid/ble.c"
         "remoteid/encode.c"
@@ -13,13 +14,17 @@ idf_component_register(
         "remoteid/wifi.c"
     INCLUDE_DIRS
         "."
+        "ota"
         "remoteid"
     REQUIRES
+        app_update
         bt
+        json
         esp_driver_gpio
         esp_driver_rmt
         esp_driver_uart
         esp_event
+        esp_http_server
         esp_netif
         esp_timer
         esp_wifi
