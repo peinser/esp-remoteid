@@ -1,5 +1,14 @@
 ESPPORT ?= /dev/ttyESP32
-HOST_SERIAL ?= /dev/cu.usbserial-XXXX
+HOST_SERIAL ?= $(shell \
+	_devs=$$(ls /dev/cu.usb* 2>/dev/null); \
+	_count=$$(echo "$$_devs" | grep -c .); \
+	if [ "$$_count" -eq 1 ]; then \
+		echo "$$_devs"; \
+	elif [ "$$_count" -eq 0 ]; then \
+		echo "ERROR:no_usb_serial_device_found"; \
+	else \
+		echo "ERROR:multiple_usb_serial_devices_found_specify_HOST_SERIAL"; \
+	fi)
 SOCAT_PORT ?= 54321
 BAUD ?= 115200
 OTA_HOST ?= http://192.168.4.1
@@ -22,10 +31,10 @@ menuconfig: ## Open ESP-IDF menuconfig
 build: ## Build firmware
 	idf.py build
 
-flash: build ## Flash firmware over the socat bridge (plaintext — first flash or no encryption)
+flash: build ## Flash firmware over the socat bridge (plaintext, first flash or no encryption)
 	cd build && esptool.py --chip esp32s3 -p $(ESPPORT) -b 460800 --before no_reset --after no_reset write_flash @flash_args
 
-flash-idf: ## Flash firmware via ESP-IDF reset control (plaintext — first flash or no encryption)
+flash-idf: ## Flash firmware via ESP-IDF reset control (plaintext, first flash or no encryption)
 	idf.py -p $(ESPPORT) flash
 
 encrypted-flash: build ## Flash firmware after flash encryption is active (Development mode)
@@ -75,11 +84,19 @@ clean: ## Remove ESP-IDF build output
 
 host-setup-socat: ## Print macOS host socat setup instructions
 	@echo "Install socat on macOS if needed: brew install socat"
-	@echo "Find the ESP32 serial device: ls /dev/{cu,tty}.usb*"
-	@echo "Start host bridge: make bridge-host HOST_SERIAL=/dev/cu.usbmodem21301"
+	@echo "Start host bridge (auto-detects a single USB serial device):"
+	@echo "  make bridge-host"
+	@echo "If multiple USB serial devices are present, specify one explicitly:"
+	@echo "  make bridge-host HOST_SERIAL=/dev/cu.usbmodemXXXX"
 	@echo "Then, inside the devcontainer: make bridge-container"
 
 bridge-host: ## Run on macOS host to expose ESP32-S3 serial over TCP
+	@case "$(HOST_SERIAL)" in ERROR:*) \
+		echo "error: $$(echo '$(HOST_SERIAL)' | tr '_' ' ' | sed 's/^ERROR: //')"; \
+		echo "usage: make bridge-host HOST_SERIAL=/dev/cu.usbmodemXXXX"; \
+		exit 1 ;; \
+	esac
+	@echo "Bridging $(HOST_SERIAL) -> TCP port $(SOCAT_PORT)"
 	socat TCP-LISTEN:$(SOCAT_PORT),reuseaddr,fork FILE:$(HOST_SERIAL),raw,echo=0,ispeed=$(BAUD),ospeed=$(BAUD)
 
 bridge-container: ## Run in devcontainer to create /dev/ttyESP32 from host TCP bridge

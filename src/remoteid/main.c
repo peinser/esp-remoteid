@@ -1,3 +1,4 @@
+#include "flash_enc_guard.h"
 #include "esp_bt.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -7,8 +8,8 @@
 #include "ota/ota.h"
 #include "remoteid/auth.h"
 #include "remoteid/ble.h"
-#include "remoteid/indicator.h"
-#include "remoteid/lighting.h"
+#include "led/indicator.h"
+#include "led/lighting.h"
 #include "remoteid/mavlink.h"
 #include "remoteid/model.h"
 #include "remoteid/store.h"
@@ -25,13 +26,13 @@ void app_main(void)
 {
     static remoteid_state_t state;
 
-    ESP_ERROR_CHECK(remoteid_indicator_init());
+    ESP_ERROR_CHECK(indicator_init());
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
     ESP_ERROR_CHECK(remoteid_ota_check_and_run());
     ESP_ERROR_CHECK(remoteid_model_init(&state));
     ESP_ERROR_CHECK(remoteid_store_start(&state));
-    ESP_ERROR_CHECK(remoteid_lighting_init());
+    ESP_ERROR_CHECK(lighting_init());
     ESP_ERROR_CHECK(remoteid_auth_init());
 
 #if CONFIG_REMOTEID_MAVLINK_INPUT
@@ -51,6 +52,6 @@ void app_main(void)
     ESP_ERROR_CHECK(remoteid_wifi_start());
 #endif
 
-    remoteid_indicator_mark_transports_started();
-    remoteid_lighting_mark_transports_started();
+    indicator_mark_transports_started();
+    lighting_mark_transports_started();
 }

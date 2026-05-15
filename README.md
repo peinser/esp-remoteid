@@ -459,7 +459,7 @@ After first boot with flash encryption enabled the NVS partition is encrypted by
 
 ### Flash encryption
 
-Flash encryption uses a hardware AES-256 key generated on first boot and stored in eFuse — it never leaves the chip. All flash reads and writes go through the hardware engine transparently; no firmware changes are required.
+Flash encryption uses a hardware AES-256 key generated on first boot and stored in eFuse; it never leaves the chip. All flash reads and writes go through the hardware engine transparently; no firmware changes are required.
 
 Enable it in `menuconfig` under **Security features → Enable flash encryption on boot**. Choose **Development** mode during bring-up (allows re-flashing via serial) and **Release** mode for production units (irreversible; serial flashing is disabled).
 
@@ -503,12 +503,102 @@ Enable in `menuconfig` under **ESP Remote ID → OTA update server**:
 Wire a momentary push-button between the configured trigger GPIO and GND. Hold the button while resetting the device. The serial log will show:
 
 ```
-I (nnn) remoteid_ota: OTA mode triggered (firmware 1.0.0) — starting management server
-I (nnn) remoteid_ota: OTA server ready on http://192.168.4.1:80 — connect to SSID 'RemoteID-OTA' (WPA2)
+I (nnn) remoteid_ota: OTA mode triggered (firmware 1.0.0), starting management server
+I (nnn) remoteid_ota: OTA server ready on http://192.168.4.1:80, connect to SSID 'RemoteID-OTA' (WPA2)
 I (nnn) remoteid_ota: Endpoints: GET /status  POST /update  POST /nvs  POST /factory-reset  POST /rollback
 ```
 
 Connect to the AP (default SSID `RemoteID-OTA`) from a laptop or phone.
+
+### Testing OTA updates
+
+The steps below cover the full test cycle from first flash through update and rollback. All `make` commands assume the devcontainer with `ESPPORT` set and the device connected via the serial bridge.
+
+#### Step 1: first flash
+
+The OTA partition table must be on the device before the OTA server can function. A standard `make flash` writes everything required: bootloader, partition table, initial OTA data, and the firmware image into `ota_0`.
+
+```sh
+make flash
+```
+
+After boot the device runs normally from `ota_0`. The `ota_1` slot is empty and `rollback_possible` is `false`.
+
+#### Step 2: enable and configure OTA
+
+In `menuconfig` under **ESP Remote ID → OTA update server**:
+
+1. Enable **Enable OTA update server**.
+2. For bench testing without a physical button, also enable **Always enter OTA mode on boot**. This skips the GPIO check so every reset drops straight into OTA mode; disable it before deploying.
+3. For hardware testing, set **OTA trigger GPIO** to the pin wired to your button and leave **Always enter OTA mode** disabled.
+4. Optionally set a WPA2 passphrase under **OTA Wi-Fi AP password**.
+
+Rebuild and reflash after any menuconfig change:
+
+```sh
+make flash
+```
+
+#### Step 3: enter OTA mode and verify the server
+
+If **Always enter OTA mode** is enabled, reset the device. If using a GPIO trigger, hold the button while pressing reset. Confirm the server is up:
+
+```sh
+make ota-status
+```
+
+Expected output:
+
+```json
+{
+    "firmware_version": "1.0.0",
+    "idf_version": "v5.5.4",
+    "running_partition": "ota_0",
+    "next_partition": "ota_1",
+    "rollback_possible": false,
+    "free_heap": 215340
+}
+```
+
+#### Step 4: build and upload a new firmware image
+
+Make any change to the firmware (for example, bump the version string in `CMakeLists.txt` or add a log line), then build and upload:
+
+```sh
+make ota-flash
+```
+
+`make ota-flash` builds the firmware, reads `build/project_description.json` to locate the binary, and streams it to `POST /update`. The device validates the image and reboots into `ota_1` roughly 500 ms after the response is received. The terminal will show the curl response:
+
+```json
+{"status":"ok","message":"Update applied, rebooting"}
+```
+
+#### Step 5: confirm the update
+
+Wait a few seconds for the device to reboot, then enter OTA mode again and query status:
+
+```sh
+make ota-status
+```
+
+`running_partition` should now be `ota_1` and `rollback_possible` should be `true`, confirming the previous slot is intact.
+
+#### Step 6: test rollback
+
+With `rollback_possible: true`, test rolling back to the previous firmware:
+
+```sh
+make ota-rollback
+```
+
+The device reboots into `ota_0`. Query status again to confirm `running_partition` is back to `ota_0` and `rollback_possible` is now `false` (the `ota_1` slot was marked invalid by the rollback).
+
+#### Iterating further
+
+Repeating steps 4 and 5 alternates between `ota_0` and `ota_1` on every successful update. Each update overwrites the slot that is not currently running, so there is always exactly one previous firmware available for rollback after a successful update.
+
+If flash encryption Development mode is active, OTA update images are uploaded in plaintext over Wi-Fi and the OTA subsystem writes them encrypted to flash transparently. No `encrypted-flash` step is required for OTA updates.
 
 ### HTTP API
 

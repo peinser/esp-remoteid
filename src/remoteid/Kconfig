@@ -434,7 +434,7 @@ endif # REMOTEID_TRANSPORT_WIFI_NAN
 config REMOTEID_FLASH_ENC_RELEASE_CONFIRM
     string "Flash encryption Release mode confirmation"
     default ""
-    depends on FLASH_ENCRYPTION_ENABLED
+    depends on SECURE_FLASH_ENC_ENABLED
     help
         Flash encryption Release mode permanently burns eFuses on first boot that
         disable serial flashing and JTAG. This cannot be reversed without replacing
@@ -442,8 +442,8 @@ config REMOTEID_FLASH_ENC_RELEASE_CONFIRM
         unrecoverable.
 
         Type UNRECOVERABLE (all caps, exactly) to allow the build to proceed when
-        CONFIG_FLASH_ENCRYPTION_MODE_RELEASE is set. Leaving this blank while
-        Release mode is enabled will cause an explicit build failure.
+        CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE is set. Leaving this blank
+        while Release mode is enabled will cause an explicit build failure.
 
 menu "OTA update server"
 
@@ -499,7 +499,7 @@ config REMOTEID_OTA_AP_PASSWORD
         WPA2 passphrase for the OTA access point. Must be at least 8 characters
         to enable WPA2; leave blank (fewer than 8 characters) for an open AP.
         Use a strong passphrase in any environment where unauthorized users
-        could connect — the HTTP server has no additional authentication layer.
+        could connect; the HTTP server has no additional authentication layer.
 
 config REMOTEID_OTA_AP_CHANNEL
     int "OTA Wi-Fi AP channel"
@@ -541,7 +541,7 @@ config REMOTEID_AUTH_PRIVATE_KEY_PEM
     default ""
     help
         The Ed25519 private key in PKCS#8 PEM format, with newlines
-        replaced by \n. Only Ed25519 keys are accepted — P-256/ECDSA
+        replaced by \n. Only Ed25519 keys are accepted; P-256/ECDSA
         keys will be rejected at startup.
 
         Generate a key:

@@ -8,6 +8,7 @@
 
 #include "cJSON.h"
 #include "driver/gpio.h"
+#include "indicator.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_event.h"
@@ -164,7 +165,7 @@ static esp_err_t handle_update(httpd_req_t *req)
     if (rc != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(rc));
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "OTA validation failed — image may be corrupt or mismatched");
+                            "OTA validation failed: image may be corrupt or mismatched");
         return ESP_FAIL;
     }
 
@@ -177,7 +178,7 @@ static esp_err_t handle_update(httpd_req_t *req)
 
     ESP_LOGI(TAG, "OTA update complete: %d bytes written to '%s'", written, ota_partition->label);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"ok\",\"message\":\"Update applied — rebooting\"}");
+    httpd_resp_sendstr(req, "{\"status\":\"ok\",\"message\":\"Update applied, rebooting\"}");
     schedule_restart(500);
     return ESP_OK;
 }
@@ -312,9 +313,9 @@ static esp_err_t handle_factory_reset(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    ESP_LOGW(TAG, "factory reset confirmed — erasing NVS partition");
+    ESP_LOGW(TAG, "factory reset confirmed, erasing NVS partition");
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"ok\",\"message\":\"NVS erased — rebooting\"}");
+    httpd_resp_sendstr(req, "{\"status\":\"ok\",\"message\":\"NVS erased, rebooting\"}");
 
     nvs_flash_erase();
     schedule_restart(500);
@@ -356,7 +357,7 @@ static esp_err_t handle_rollback(httpd_req_t *req)
 
     ESP_LOGW(TAG, "OTA rollback confirmed");
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"ok\",\"message\":\"Rolling back — rebooting\"}");
+    httpd_resp_sendstr(req, "{\"status\":\"ok\",\"message\":\"Rolling back, rebooting\"}");
 
     esp_ota_mark_app_invalid_rollback_and_reboot();
     return ESP_OK; // unreachable
@@ -473,14 +474,15 @@ esp_err_t remoteid_ota_check_and_run(void)
     }
 
     const esp_app_desc_t *desc = esp_app_get_description();
-    ESP_LOGI(TAG, "OTA mode triggered (firmware %s) — starting management server",
+    ESP_LOGI(TAG, "OTA mode triggered (firmware %s), starting management server",
              desc->version);
 
+    indicator_set_ota_active();
     ESP_RETURN_ON_ERROR(start_ota_ap(), TAG, "start OTA Wi-Fi AP");
     ESP_RETURN_ON_ERROR(start_http_server(), TAG, "start OTA HTTP server");
 
     ESP_LOGI(TAG,
-             "OTA server ready on http://192.168.4.1:%d — "
+             "OTA server ready on http://192.168.4.1:%d, "
              "connect to SSID '%s'%s",
              CONFIG_REMOTEID_OTA_HTTP_PORT,
              CONFIG_REMOTEID_OTA_AP_SSID,

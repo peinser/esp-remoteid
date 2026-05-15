@@ -81,14 +81,14 @@ paths:
               description: ESP-IDF application binary (.bin)
       responses:
         "200":
-          description: Image accepted — device is rebooting
+          description: Image accepted, device is rebooting
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
               example:
                 status: ok
-                message: "Update applied — rebooting"
+                message: "Update applied, rebooting"
         "400":
           description: |
             Image validation failed (corrupt, wrong chip target, or checksum
@@ -99,7 +99,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "408":
-          description: Upload stalled — the request body was not fully received within the socket timeout.
+          description: Upload stalled: the request body was not fully received within the socket timeout.
           content:
             application/json:
               schema:
@@ -195,14 +195,14 @@ paths:
               confirm: FACTORY-RESET
       responses:
         "200":
-          description: NVS erased — device is rebooting
+          description: NVS erased, device is rebooting
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
               example:
                 status: ok
-                message: "NVS erased — rebooting"
+                message: "NVS erased, rebooting"
         "400":
           description: Confirmation string missing or incorrect.
           content:
@@ -237,14 +237,14 @@ paths:
               confirm: ROLLBACK
       responses:
         "200":
-          description: Rollback initiated — device is rebooting
+          description: Rollback initiated, device is rebooting
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
               example:
                 status: ok
-                message: "Rolling back — rebooting"
+                message: "Rolling back, rebooting"
         "400":
           description: Confirmation string missing or incorrect.
           content:
@@ -308,7 +308,7 @@ components:
         message:
           type: string
           description: Human-readable description of the action taken.
-          example: "Update applied — rebooting"
+          example: "Update applied, rebooting"
 
     ErrorResponse:
       type: object
@@ -320,7 +320,7 @@ components:
         message:
           type: string
           description: Human-readable description of the error.
-          example: "OTA validation failed — image may be corrupt or mismatched"
+          example: "OTA validation failed: image may be corrupt or mismatched"
 
     NvsWriteRequest:
       type: object

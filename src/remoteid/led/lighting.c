@@ -19,10 +19,10 @@
 #define CONFIG_REMOTEID_LIGHTING_ENABLE 0
 #endif
 
-#define REMOTEID_LIGHTING_OUTPUT_COUNT 5
-#define REMOTEID_LIGHTING_TASK_STACK 3072
-#define REMOTEID_LIGHTING_TASK_PRIORITY 4
-#define REMOTEID_LIGHTING_TICK_MS 20
+#define LIGHTING_OUTPUT_COUNT 5
+#define LIGHTING_TASK_STACK 3072
+#define LIGHTING_TASK_PRIORITY 4
+#define LIGHTING_TICK_MS 20
 
 #if CONFIG_REMOTEID_LIGHTING_ENABLE
 
@@ -196,33 +196,33 @@
 #define CONFIG_REMOTEID_LIGHTING_OUTPUT4_PHASE_MS 0
 #endif
 
-typedef struct remoteid_lighting_output_config {
+typedef struct lighting_output_config {
     bool enabled;
     int gpio;
     bool active_high;
     bool open_drain;
-    remoteid_pattern_t pattern;
+    led_pattern_t pattern;
     uint32_t phase_ms;
-} remoteid_lighting_output_config_t;
+} lighting_output_config_t;
 
-typedef struct remoteid_lighting_output_state {
+typedef struct lighting_output_state {
     bool configured;
-} remoteid_lighting_output_state_t;
+} lighting_output_state_t;
 
-static const char *TAG = "remoteid_lighting";
+static const char *TAG = "lighting";
 
 static _Atomic bool s_transports_started;
 static int64_t s_start_us;
-static remoteid_lighting_output_state_t s_outputs[REMOTEID_LIGHTING_OUTPUT_COUNT];
+static lighting_output_state_t s_outputs[LIGHTING_OUTPUT_COUNT];
 
 #define OUTPUT_PATTERN(idx) \
-    (CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_SOLID ? REMOTEID_PATTERN_SOLID : \
-     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_BEACON_1HZ_50 ? REMOTEID_PATTERN_BEACON_1HZ_50 : \
-     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_STROBE_SINGLE ? REMOTEID_PATTERN_STROBE_SINGLE : \
-     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_STROBE_DOUBLE ? REMOTEID_PATTERN_STROBE_DOUBLE : \
-     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_STROBE_TRIPLE ? REMOTEID_PATTERN_STROBE_TRIPLE : \
-     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_FAST_STROBE ? REMOTEID_PATTERN_FAST_STROBE : \
-                                                                 REMOTEID_PATTERN_BEACON_1HZ_SHORT)
+    (CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_SOLID ? LED_PATTERN_SOLID : \
+     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_BEACON_1HZ_50 ? LED_PATTERN_BEACON_1HZ_50 : \
+     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_STROBE_SINGLE ? LED_PATTERN_STROBE_SINGLE : \
+     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_STROBE_DOUBLE ? LED_PATTERN_STROBE_DOUBLE : \
+     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_STROBE_TRIPLE ? LED_PATTERN_STROBE_TRIPLE : \
+     CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PATTERN_FAST_STROBE ? LED_PATTERN_FAST_STROBE : \
+                                                                 LED_PATTERN_BEACON_1HZ_SHORT)
 
 #define OUTPUT_CONFIG(idx) \
     { \
@@ -234,7 +234,7 @@ static remoteid_lighting_output_state_t s_outputs[REMOTEID_LIGHTING_OUTPUT_COUNT
         .phase_ms = CONFIG_REMOTEID_LIGHTING_OUTPUT##idx##_PHASE_MS, \
     }
 
-static const remoteid_lighting_output_config_t s_config[REMOTEID_LIGHTING_OUTPUT_COUNT] = {
+static const lighting_output_config_t s_config[LIGHTING_OUTPUT_COUNT] = {
     OUTPUT_CONFIG(0),
     OUTPUT_CONFIG(1),
     OUTPUT_CONFIG(2),
@@ -242,7 +242,7 @@ static const remoteid_lighting_output_config_t s_config[REMOTEID_LIGHTING_OUTPUT
     OUTPUT_CONFIG(4),
 };
 
-static int output_level(const remoteid_lighting_output_config_t *config, bool on)
+static int output_level(const lighting_output_config_t *config, bool on)
 {
     bool active = config->active_high ? on : !on;
     return active ? 1 : 0;
@@ -257,10 +257,9 @@ static void set_output(size_t index, bool on)
     gpio_set_level(s_config[index].gpio, output_level(&s_config[index], on));
 }
 
-
 static bool output_should_be_on(size_t index, int64_t now_us)
 {
-    const remoteid_lighting_output_config_t *config = &s_config[index];
+    const lighting_output_config_t *config = &s_config[index];
 
     if (!s_outputs[index].configured) {
         return false;
@@ -271,7 +270,7 @@ static bool output_should_be_on(size_t index, int64_t now_us)
     }
 
     uint32_t elapsed_ms = (uint32_t)((now_us - s_start_us) / 1000LL);
-    return remoteid_pattern_is_on(config->pattern, elapsed_ms, config->phase_ms);
+    return led_pattern_is_on(config->pattern, elapsed_ms, config->phase_ms);
 }
 
 static void lighting_task(void *arg)
@@ -280,10 +279,10 @@ static void lighting_task(void *arg)
 
     while (true) {
         int64_t now_us = esp_timer_get_time();
-        for (size_t i = 0; i < REMOTEID_LIGHTING_OUTPUT_COUNT; i++) {
+        for (size_t i = 0; i < LIGHTING_OUTPUT_COUNT; i++) {
             set_output(i, output_should_be_on(i, now_us));
         }
-        vTaskDelay(pdMS_TO_TICKS(REMOTEID_LIGHTING_TICK_MS));
+        vTaskDelay(pdMS_TO_TICKS(LIGHTING_TICK_MS));
     }
 }
 
@@ -299,7 +298,7 @@ static bool gpio_already_used(size_t current_index)
 
 static esp_err_t configure_output(size_t index)
 {
-    const remoteid_lighting_output_config_t *config = &s_config[index];
+    const lighting_output_config_t *config = &s_config[index];
 
     if (!config->enabled) {
         return ESP_OK;
@@ -329,16 +328,16 @@ static esp_err_t configure_output(size_t index)
     return ESP_OK;
 }
 
-esp_err_t remoteid_lighting_init(void)
+esp_err_t lighting_init(void)
 {
     s_start_us = esp_timer_get_time();
 
-    for (size_t i = 0; i < REMOTEID_LIGHTING_OUTPUT_COUNT; i++) {
+    for (size_t i = 0; i < LIGHTING_OUTPUT_COUNT; i++) {
         ESP_RETURN_ON_ERROR(configure_output(i), TAG, "configure lighting output");
     }
 
-    if (xTaskCreate(lighting_task, "remoteid_lighting", REMOTEID_LIGHTING_TASK_STACK,
-                    NULL, REMOTEID_LIGHTING_TASK_PRIORITY, NULL) != pdPASS) {
+    if (xTaskCreate(lighting_task, "lighting", LIGHTING_TASK_STACK,
+                    NULL, LIGHTING_TASK_PRIORITY, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create lighting task");
         return ESP_ERR_NO_MEM;
     }
@@ -346,19 +345,19 @@ esp_err_t remoteid_lighting_init(void)
     return ESP_OK;
 }
 
-void remoteid_lighting_mark_transports_started(void)
+void lighting_mark_transports_started(void)
 {
     atomic_store_explicit(&s_transports_started, true, memory_order_release);
 }
 
 #else
 
-esp_err_t remoteid_lighting_init(void)
+esp_err_t lighting_init(void)
 {
     return ESP_OK;
 }
 
-void remoteid_lighting_mark_transports_started(void)
+void lighting_mark_transports_started(void)
 {
 }
 

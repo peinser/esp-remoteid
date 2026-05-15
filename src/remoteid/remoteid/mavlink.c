@@ -80,9 +80,9 @@ static void submit_heartbeat(const mavlink_message_t *message)
     if (is_armed && !s_was_armed) {
         remoteid_store_update_t update = {.type = REMOTEID_STORE_UPDATE_TAKEOFF};
         if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
-            ESP_LOGI(TAG, "vehicle armed — capturing takeoff position");
+            ESP_LOGI(TAG, "vehicle armed, capturing takeoff position");
         } else {
-            ESP_LOGW(TAG, "vehicle armed — takeoff position capture dropped: queue full");
+            ESP_LOGW(TAG, "vehicle armed, takeoff position capture dropped: queue full");
         }
     }
 

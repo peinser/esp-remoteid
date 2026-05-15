@@ -77,7 +77,7 @@ static esp_err_t parse_pkcs8_ed25519(const char *pem, uint8_t seed[32])
     if (der_len != 48 ||
         memcmp(der, PKCS8_ED25519_PREFIX, sizeof(PKCS8_ED25519_PREFIX)) != 0) {
         memset(der, 0, sizeof(der));
-        ESP_LOGE(TAG, "private key is not a PKCS#8 Ed25519 key — use "
+        ESP_LOGE(TAG, "private key is not a PKCS#8 Ed25519 key; use "
                       "'openssl genpkey -algorithm ed25519'");
         return ESP_ERR_INVALID_ARG;
     }
@@ -143,7 +143,7 @@ static esp_err_t load_private_key_pem(char *buf, size_t buf_size)
     rc = nvs_get_str(nvs, REMOTEID_AUTH_NVS_KEY, buf, &len);
     nvs_close(nvs);
     if (rc != ESP_OK) {
-        ESP_LOGE(TAG, "private key not in NVS (%s) — set REMOTEID_AUTH_PRIVATE_KEY_PEM "
+        ESP_LOGE(TAG, "private key not in NVS (%s); set REMOTEID_AUTH_PRIVATE_KEY_PEM "
                       "or provision via NVS namespace \"%s\" key \"%s\"",
                  esp_err_to_name(rc), REMOTEID_AUTH_NVS_NAMESPACE, REMOTEID_AUTH_NVS_KEY);
         return ESP_ERR_NOT_FOUND;

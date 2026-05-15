@@ -43,7 +43,7 @@ def die(msg):
 def nvs_gen_script():
     idf_path = os.environ.get("IDF_PATH")
     if not idf_path:
-        die("IDF_PATH is not set — source the ESP-IDF environment first:\n"
+        die("IDF_PATH is not set; source the ESP-IDF environment first:\n"
             "  . $IDF_PATH/export.sh")
     path = os.path.join(idf_path, "components", "nvs_flash",
                         "nvs_partition_generator", "nvs_partition_gen.py")
