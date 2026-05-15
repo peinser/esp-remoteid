@@ -720,3 +720,8 @@ The first flash writes the firmware to `ota_0`. Subsequent OTA updates alternate
 ### BLE schedule with authentication
 
 When authentication is enabled the BLE schedule extends from 8 to 12 slots (3 seconds per full cycle at 250 ms per slot). Auth pages 0–3 are appended after the base message rotation. The Location and System messages are refreshed immediately before signing so auth pages always cover the most recent state.
+
+## TODO
+
+- [ ] DroneCAN inputs and state processing.
+- [ ] Signed OTA, validate firmware binaries against stored public keys before flashing.
