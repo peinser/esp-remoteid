@@ -3,7 +3,7 @@ HOST_SERIAL ?= /dev/cu.usbserial-XXXX
 SOCAT_PORT ?= 54321
 BAUD ?= 115200
 
-.PHONY: help set-target reset menuconfig build flash flash-idf encrypted-flash nvs-flash monitor monitor-raw probe clean bridge-host bridge-container host-setup-socat
+.PHONY: help set-target reset menuconfig build flash flash-idf encrypted-flash nvs-flash provision-key monitor monitor-raw probe clean bridge-host bridge-container host-setup-socat
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -32,6 +32,10 @@ encrypted-flash: build ## Flash firmware after flash encryption is active (Devel
 
 nvs-flash: ## Write nvs.bin to the NVS partition (run before first boot to provision keys)
 	parttool.py -p $(ESPPORT) write_partition --partition-name nvs --input nvs.bin
+
+provision-key: ## Provision private key into device NVS (KEY_FILE=path/to/device.pem)
+	@test -n "$(KEY_FILE)" || (echo "Usage: make provision-key KEY_FILE=path/to/device.pem" && exit 1)
+	python .dev/scripts/provision_key.py $(KEY_FILE) --port $(ESPPORT)
 
 monitor: ## Open ESP-IDF serial monitor via ESPPORT
 	idf.py -p $(ESPPORT) monitor

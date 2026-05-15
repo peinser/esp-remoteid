@@ -397,8 +397,8 @@ Submit `device.csr` to your CA. Register the signed certificate in your verifica
 
 The firmware looks for the private key in this order:
 
-1. **Compiled-in** — `REMOTEID_AUTH_PRIVATE_KEY_PEM` in Kconfig/sdkconfig. Used during development; takes priority when set.
-2. **NVS** — NVS namespace `remoteid_auth`, key `priv_key`. Used in production; the flash encryption hardware protects it at rest.
+1. **Compiled-in**: `REMOTEID_AUTH_PRIVATE_KEY_PEM` in Kconfig/sdkconfig. Used during development; takes priority when set.
+2. **NVS**: NVS namespace `remoteid_auth`, key `priv_key`. Used in production; the flash encryption hardware protects it at rest.
 
 If neither source has a key the firmware aborts at startup with an error log.
 
@@ -436,33 +436,26 @@ Leave `REMOTEID_AUTH_PRIVATE_KEY_PEM` empty in the production build. Provision t
    openssl genpkey -algorithm ed25519 -out device.pem
    ```
 
-2. Create an NVS CSV file (`nvs_keys.csv`):
-
-   ```csv
-   key,type,encoding,value
-   remoteid_auth,namespace,,
-   private_key,data,string,"-----BEGIN PRIVATE KEY-----
-   MC4CAQAwBQYD...
-   -----END PRIVATE KEY-----
-   "
-   ```
-
-   The value must be a standard PEM with real newlines (not `\n` escapes).
-
-3. Generate the NVS binary (match the size to the `nvs` partition in your partition table):
+2. Provision the key into the device NVS partition **before first boot**:
 
    ```sh
-   python $IDF_PATH/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py \
-     generate nvs_keys.csv nvs.bin 0x6000
+   make provision-key KEY_FILE=device.pem
    ```
 
-4. Flash the NVS partition **before** first boot (before flash encryption activates):
+   or with an explicit port:
 
    ```sh
-   parttool.py --port /dev/ttyUSB0 write_partition --partition-name nvs --input nvs.bin
+   python .dev/scripts/provision_key.py device.pem --port /dev/ttyUSB0
    ```
 
-After first boot with flash encryption enabled the NVS partition is encrypted by the hardware and the plaintext binary is no longer useful on its own.
+   The script generates the NVS binary and flashes it in one step. To generate the binary without flashing (e.g. to inspect it or flash it manually later):
+
+   ```sh
+   python .dev/scripts/provision_key.py device.pem --output nvs.bin
+   parttool.py -p /dev/ttyUSB0 write_partition --partition-name nvs --input nvs.bin
+   ```
+
+After first boot with flash encryption enabled the NVS partition is encrypted by the hardware and the plaintext binary is no longer accepted.
 
 ### Flash encryption
 
