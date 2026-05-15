@@ -431,6 +431,20 @@ config REMOTEID_WIFI_NAN_TX_INTERVAL_MS
 
 endif # REMOTEID_TRANSPORT_WIFI_NAN
 
+config REMOTEID_FLASH_ENC_RELEASE_CONFIRM
+    string "Flash encryption Release mode confirmation"
+    default ""
+    depends on FLASH_ENCRYPTION_ENABLED
+    help
+        Flash encryption Release mode permanently burns eFuses on first boot that
+        disable serial flashing and JTAG. This cannot be reversed without replacing
+        the SoC. A device in Release mode without a working OTA path is permanently
+        unrecoverable.
+
+        Type UNRECOVERABLE (all caps, exactly) to allow the build to proceed when
+        CONFIG_FLASH_ENCRYPTION_MODE_RELEASE is set. Leaving this blank while
+        Release mode is enabled will cause an explicit build failure.
+
 menu "Authentication"
 
 config REMOTEID_AUTH_ED25519

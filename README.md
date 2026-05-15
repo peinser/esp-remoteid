@@ -361,8 +361,7 @@ The firmware only needs the private key. The certificate lives in your registry.
 ### Assumptions and limitations
 
 - **No real-time clock.** The timestamp in auth page 0 is seconds since boot, not UTC. This satisfies the wire format but limits anti-replay protection. A GPS or NTP time source would provide a meaningful timestamp.
-- **Private key in firmware image.** The key is compiled into the binary via Kconfig. Do not commit `sdkconfig` to source control when a production key is configured. Use `sdkconfig.dev` for development (see below).
-- **Static key per build.** Key rotation requires a reflash. NVS-based provisioning is a planned future improvement.
+- **Private key security.** The key is only as safe as the flash it lives in. Without flash encryption the raw key bytes are readable directly off the chip. See [Flash encryption](#flash-encryption) below.
 
 ### Key generation
 
@@ -394,7 +393,16 @@ openssl req -new -key device.pem -out device.csr \
 
 Submit `device.csr` to your CA. Register the signed certificate in your verification service registry, keyed by UAS ID.
 
-### Configuration
+### Key sources
+
+The firmware looks for the private key in this order:
+
+1. **Compiled-in** — `REMOTEID_AUTH_PRIVATE_KEY_PEM` in Kconfig/sdkconfig. Used during development; takes priority when set.
+2. **NVS** — NVS namespace `remoteid_auth`, key `priv_key`. Used in production; the flash encryption hardware protects it at rest.
+
+If neither source has a key the firmware aborts at startup with an error log.
+
+### Development configuration
 
 Format the private key for Kconfig (one line, `\n` as separator):
 
@@ -409,9 +417,7 @@ CONFIG_REMOTEID_AUTH_ED25519=y
 CONFIG_REMOTEID_AUTH_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYD...\n-----END PRIVATE KEY-----\n"
 ```
 
-### Development
-
-A dummy key and placeholder identity are provided in `sdkconfig.dev` for local development without a real CA. Apply it with:
+A dummy key and placeholder identity are provided in `sdkconfig.dev` for local development without a real CA:
 
 ```sh
 export SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.dev"
@@ -419,6 +425,65 @@ idf.py build
 ```
 
 Never flash `sdkconfig.dev` credentials to a production device.
+
+### Production configuration (NVS provisioning)
+
+Leave `REMOTEID_AUTH_PRIVATE_KEY_PEM` empty in the production build. Provision the key into NVS using the ESP-IDF partition generator before the device is sealed. Follow the procedure below our apply the procedure outlined by your PKI:
+
+1. Generate a per-device key:
+
+   ```sh
+   openssl genpkey -algorithm ed25519 -out device.pem
+   ```
+
+2. Create an NVS CSV file (`nvs_keys.csv`):
+
+   ```csv
+   key,type,encoding,value
+   remoteid_auth,namespace,,
+   private_key,data,string,"-----BEGIN PRIVATE KEY-----
+   MC4CAQAwBQYD...
+   -----END PRIVATE KEY-----
+   "
+   ```
+
+   The value must be a standard PEM with real newlines (not `\n` escapes).
+
+3. Generate the NVS binary (match the size to the `nvs` partition in your partition table):
+
+   ```sh
+   python $IDF_PATH/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py \
+     generate nvs_keys.csv nvs.bin 0x6000
+   ```
+
+4. Flash the NVS partition **before** first boot (before flash encryption activates):
+
+   ```sh
+   parttool.py --port /dev/ttyUSB0 write_partition --partition-name nvs --input nvs.bin
+   ```
+
+After first boot with flash encryption enabled the NVS partition is encrypted by the hardware and the plaintext binary is no longer useful on its own.
+
+### Flash encryption
+
+Flash encryption uses a hardware AES-256 key generated on first boot and stored in eFuse — it never leaves the chip. All flash reads and writes go through the hardware engine transparently; no firmware changes are required.
+
+Enable it in `menuconfig` under **Security features → Enable flash encryption on boot**. Choose **Development** mode during bring-up (allows re-flashing via serial) and **Release** mode for production units (irreversible; serial flashing is disabled).
+
+**Development mode workflow:**
+
+```sh
+idf.py flash             # first flash: plaintext, bootloader encrypts on first boot
+idf.py encrypted-flash   # subsequent flashes: pre-encrypt before writing
+```
+
+**Production mode workflow:** flash the firmware and NVS partition once before sealing. After first boot the device can only be updated via OTA.
+
+#### Release mode build guard
+
+> **Warning:** Release mode permanently burns eFuses on first boot that disable serial flashing and JTAG. This cannot be undone without replacing the SoC. A device in Release mode without a working OTA path is unrecoverable.
+
+To prevent accidental enabling, the build will fail if `CONFIG_FLASH_ENCRYPTION_MODE_RELEASE` is set without an explicit confirmation. In `menuconfig`, navigate to **ESP Remote ID → Flash encryption Release mode confirmation** and type `UNRECOVERABLE` exactly. The build will be blocked until this string is present.
 
 ### BLE schedule with authentication
 

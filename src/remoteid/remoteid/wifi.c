@@ -8,6 +8,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -111,6 +112,14 @@ static wifi_mode_t wifi_mode(void)
 #endif
 }
 
+static esp_err_t randomize_mac(wifi_interface_t iface)
+{
+    uint8_t mac[6];
+    esp_fill_random(mac, sizeof(mac));
+    mac[0] = (mac[0] & 0xfe) | 0x02; // unicast, locally-administered
+    return esp_wifi_set_mac(iface, mac);
+}
+
 static esp_err_t init_wifi_driver(void)
 {
     esp_err_t rc = esp_netif_init();
@@ -138,6 +147,13 @@ static esp_err_t init_wifi_driver(void)
     ap_config.ap.beacon_interval = CONFIG_REMOTEID_WIFI_BEACON_TX_INTERVAL_MS;
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap_config), TAG, "configure Wi-Fi AP");
+#endif
+
+#if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON
+    ESP_RETURN_ON_ERROR(randomize_mac(WIFI_IF_AP), TAG, "randomize Wi-Fi AP MAC");
+#endif
+#if CONFIG_REMOTEID_TRANSPORT_WIFI_NAN
+    ESP_RETURN_ON_ERROR(randomize_mac(WIFI_IF_STA), TAG, "randomize Wi-Fi NAN MAC");
 #endif
 
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start Wi-Fi");

@@ -176,11 +176,18 @@ static void remoteid_ble_task(void *arg)
 
 static void ble_on_sync(void)
 {
-    int rc = ble_hs_id_infer_auto(0, &s_own_addr_type);
+    ble_addr_t rnd_addr;
+    int rc = ble_hs_id_gen_rnd(1, &rnd_addr);
     if (rc != 0) {
-        ESP_LOGE(TAG, "failed to infer BLE address type: %d", rc);
+        ESP_LOGE(TAG, "failed to generate random BLE address: %d", rc);
         return;
     }
+    rc = ble_hs_id_set_rnd(rnd_addr.val);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "failed to set random BLE address: %d", rc);
+        return;
+    }
+    s_own_addr_type = BLE_OWN_ADDR_RANDOM;
 
     ESP_LOGI(TAG, "BLE ready, starting OpenDroneID advertiser");
     if (xTaskCreate(remoteid_ble_task, "remoteid_ble", 6144, NULL, 5, NULL) != pdPASS) {

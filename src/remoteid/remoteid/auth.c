@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
 #include "monocypher-ed25519.h"
+#include "nvs.h"
 
 static const char *TAG = "remoteid_auth";
 
@@ -115,15 +116,53 @@ static void fill_auth_pages(ODID_Auth_data pages[ODID_AUTH_MAX_PAGES],
     }
 }
 
+// NVS namespace and key name for the provisioned private key.
+#define REMOTEID_AUTH_NVS_NAMESPACE "remoteid_auth"
+#define REMOTEID_AUTH_NVS_KEY       "private_key"
+
+// Maximum PEM size: ~120 bytes in practice; 256 gives comfortable headroom.
+#define REMOTEID_AUTH_PEM_BUF_SIZE  256
+
+// Load the private key PEM from compiled-in Kconfig value (development) or
+// NVS (production). Compiled-in key takes priority so sdkconfig.dev workflow
+// is unaffected when both are present.
+static esp_err_t load_private_key_pem(char *buf, size_t buf_size)
+{
+    if (strlen(CONFIG_REMOTEID_AUTH_PRIVATE_KEY_PEM) > 0) {
+        strlcpy(buf, CONFIG_REMOTEID_AUTH_PRIVATE_KEY_PEM, buf_size);
+        return ESP_OK;
+    }
+
+    nvs_handle_t nvs;
+    esp_err_t rc = nvs_open(REMOTEID_AUTH_NVS_NAMESPACE, NVS_READONLY, &nvs);
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "no compiled-in key and NVS open failed (%s)", esp_err_to_name(rc));
+        return ESP_ERR_NOT_FOUND;
+    }
+    size_t len = buf_size;
+    rc = nvs_get_str(nvs, REMOTEID_AUTH_NVS_KEY, buf, &len);
+    nvs_close(nvs);
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "private key not in NVS (%s) — set REMOTEID_AUTH_PRIVATE_KEY_PEM "
+                      "or provision via NVS namespace \"%s\" key \"%s\"",
+                 esp_err_to_name(rc), REMOTEID_AUTH_NVS_NAMESPACE, REMOTEID_AUTH_NVS_KEY);
+        return ESP_ERR_NOT_FOUND;
+    }
+    ESP_LOGI(TAG, "Ed25519 private key loaded from NVS");
+    return ESP_OK;
+}
+
 esp_err_t remoteid_auth_init(void)
 {
-    if (strlen(CONFIG_REMOTEID_AUTH_PRIVATE_KEY_PEM) == 0) {
-        ESP_LOGE(TAG, "REMOTEID_AUTH_PRIVATE_KEY_PEM is not set");
-        return ESP_ERR_INVALID_ARG;
+    char pem[REMOTEID_AUTH_PEM_BUF_SIZE];
+    esp_err_t rc = load_private_key_pem(pem, sizeof(pem));
+    if (rc != ESP_OK) {
+        return rc;
     }
 
     uint8_t seed[32];
-    esp_err_t rc = parse_pkcs8_ed25519(CONFIG_REMOTEID_AUTH_PRIVATE_KEY_PEM, seed);
+    rc = parse_pkcs8_ed25519(pem, seed);
+    crypto_wipe(pem, sizeof(pem));
     if (rc != ESP_OK) {
         return rc;
     }
