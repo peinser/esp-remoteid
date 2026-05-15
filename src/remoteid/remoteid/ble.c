@@ -21,6 +21,9 @@
 #define REMOTEID_SERVICE_DATA_LEN (2 + ODID_MESSAGE_SIZE)
 #define REMOTEID_LEGACY_ADV_DATA_LEN (1 + 1 + 2 + REMOTEID_SERVICE_DATA_LEN)
 #define REMOTEID_ADV_INTERVAL_100_MS 0x00a0
+// One full advertising window between auth pages: enough for one transmission on all 3 channels.
+// Auth pages are already consecutive in the schedule so the total burst is 4 x this value.
+#define REMOTEID_BLE_AUTH_PAGE_INTERVAL_MS 100
 
 #ifndef CONFIG_REMOTEID_BLE_TX_INTERVAL_MS
 #define CONFIG_REMOTEID_BLE_TX_INTERVAL_MS 250
@@ -146,12 +149,14 @@ static void remoteid_ble_task(void *arg)
         }
 
         uint8_t schedule_entry = s_message_schedule[s_schedule_index];
+        bool is_auth_page = (schedule_entry >= REMOTEID_MESSAGE_COUNT);
 
-        if (schedule_entry >= REMOTEID_MESSAGE_COUNT) {
+        if (is_auth_page) {
             int page = schedule_entry - REMOTEID_MESSAGE_COUNT;
             if (page == 0) {
-                remoteid_encode_dynamic_message(&snapshot, &s_bundle, REMOTEID_MESSAGE_LOCATION);
-                remoteid_encode_dynamic_message(&snapshot, &s_bundle, REMOTEID_MESSAGE_SYSTEM);
+                // Sign the bundle as-is: these are exactly the bytes last broadcast
+                // for each message type. Re-encoding here would diverge (system timestamp
+                // advances every second) causing receivers to fail verification.
                 remoteid_auth_sign_bundle(&s_bundle);
             }
             if (advertise_message(s_bundle.auth_pages[page]) == ESP_OK) {
@@ -170,7 +175,8 @@ static void remoteid_ble_task(void *arg)
         }
 
         s_schedule_index = (s_schedule_index + 1) % (sizeof(s_message_schedule) / sizeof(s_message_schedule[0]));
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_REMOTEID_BLE_TX_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(is_auth_page ? REMOTEID_BLE_AUTH_PAGE_INTERVAL_MS
+                                              : CONFIG_REMOTEID_BLE_TX_INTERVAL_MS));
     }
 }
 
