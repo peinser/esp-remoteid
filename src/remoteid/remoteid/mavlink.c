@@ -57,6 +57,38 @@ static void copy_mavlink_text(char *dst, size_t dst_len, const void *src, size_t
     dst[len] = '\0';
 }
 
+static void submit_heartbeat(const mavlink_message_t *message)
+{
+    mavlink_heartbeat_t msg = {0};
+    mavlink_msg_heartbeat_decode(message, &msg);
+
+    // Only track arm state from autopilots; ignore GCS, cameras, and other components.
+    if (msg.autopilot == MAV_AUTOPILOT_INVALID) {
+        return;
+    }
+
+    // Filter by configured source system ID if set (HEARTBEAT has no target fields;
+    // match against the sender's system ID in the MAVLink header instead).
+    if (CONFIG_REMOTEID_MAVLINK_TARGET_SYSTEM != 0 &&
+        message->sysid != CONFIG_REMOTEID_MAVLINK_TARGET_SYSTEM) {
+        return;
+    }
+
+    static bool s_was_armed = false;
+    bool is_armed = (msg.base_mode & MAV_MODE_FLAG_SAFETY_ARMED) != 0;
+
+    if (is_armed && !s_was_armed) {
+        remoteid_store_update_t update = {.type = REMOTEID_STORE_UPDATE_TAKEOFF};
+        if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
+            ESP_LOGI(TAG, "vehicle armed — capturing takeoff position");
+        } else {
+            ESP_LOGW(TAG, "vehicle armed — takeoff position capture dropped: queue full");
+        }
+    }
+
+    s_was_armed = is_armed;
+}
+
 static void submit_basic_id(const mavlink_message_t *message)
 {
     mavlink_open_drone_id_basic_id_t msg = { 0 };
@@ -185,6 +217,9 @@ static void submit_system(const mavlink_message_t *message)
 static void handle_message(const mavlink_message_t *message)
 {
     switch (message->msgid) {
+    case MAVLINK_MSG_ID_HEARTBEAT:
+        submit_heartbeat(message);
+        break;
     case MAVLINK_MSG_ID_OPEN_DRONE_ID_BASIC_ID:
         submit_basic_id(message);
         break;

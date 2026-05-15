@@ -11,6 +11,9 @@ typedef enum remoteid_store_update_type {
     REMOTEID_STORE_UPDATE_OPERATOR_ID,
     REMOTEID_STORE_UPDATE_LOCATION,
     REMOTEID_STORE_UPDATE_SYSTEM,
+    // Snapshot the current location into the System operator position fields.
+    // Carries no payload — the store reads from its own location state atomically.
+    REMOTEID_STORE_UPDATE_TAKEOFF,
 } remoteid_store_update_type_t;
 
 typedef struct remoteid_store_update {

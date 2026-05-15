@@ -108,6 +108,20 @@ static void apply_update_locked(const remoteid_store_update_t *update)
         s_state.eu_class                 = update->data.system.eu_class;
         ESP_LOGD(TAG, "updated System from input source");
         break;
+    case REMOTEID_STORE_UPDATE_TAKEOFF:
+        if (s_state.has_position) {
+            s_state.has_operator_position   = true;
+            s_state.operator_latitude       = s_state.latitude;
+            s_state.operator_longitude      = s_state.longitude;
+            s_state.operator_altitude_geo_m = s_state.altitude_geo_m;
+            s_state.operator_location_type  = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
+            ESP_LOGI(TAG, "takeoff position set: %.6f, %.6f @ %.1f m",
+                     s_state.operator_latitude, s_state.operator_longitude,
+                     s_state.operator_altitude_geo_m);
+        } else {
+            ESP_LOGW(TAG, "arm detected but no GPS fix — takeoff position not captured");
+        }
+        break;
     }
 
     bool was_ready = (xEventGroupGetBits(s_events) & REMOTEID_STORE_READY_BIT) != 0;
