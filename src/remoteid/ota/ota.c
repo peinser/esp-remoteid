@@ -492,7 +492,7 @@ esp_err_t remoteid_ota_check_and_run(void)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    return ESP_OK; // unreachable
+    return ESP_OK; // Unreachable, infinite loop above.
 }
 
 #else // CONFIG_REMOTEID_OTA_ENABLE
