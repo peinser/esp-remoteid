@@ -92,14 +92,24 @@ static void fill_auth_pages(ODID_Auth_data pages[ODID_AUTH_MAX_PAGES],
 {
     uint32_t timestamp = (uint32_t)(esp_timer_get_time() / 1000000ULL);
 
-    for (int page = 0; page < ODID_AUTH_MAX_PAGES; page++) {
+    // Compute how many pages are actually needed to carry 64 bytes.
+    // Receivers use LastPageIndex to know when collection is complete; setting
+    // it to ODID_AUTH_MAX_PAGES-1 (16-1=15) would cause receivers to wait
+    // forever for pages that are never broadcast.
+    int remaining_after_page0 = 64 - ODID_AUTH_PAGE_ZERO_DATA_SIZE;
+    int extra_pages = (remaining_after_page0 + ODID_AUTH_PAGE_NONZERO_DATA_SIZE - 1)
+                      / ODID_AUTH_PAGE_NONZERO_DATA_SIZE;
+
+    int last_page_index = extra_pages;  // 0-based: page 0 + extra_pages pages
+
+    for (int page = 0; page <= last_page_index; page++) {
         ODID_Auth_data *auth = &pages[page];
         odid_initAuthData(auth);
         auth->AuthType = ODID_AUTH_MESSAGE_SET_SIGNATURE;
         auth->DataPage = page;
 
         if (page == 0) {
-            auth->LastPageIndex = ODID_AUTH_MAX_PAGES - 1;
+            auth->LastPageIndex = (uint8_t)last_page_index;
             auth->Length        = 64;
             auth->Timestamp     = timestamp;
             memcpy(auth->AuthData, signature, ODID_AUTH_PAGE_ZERO_DATA_SIZE);
