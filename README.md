@@ -398,7 +398,7 @@ Submit `device.csr` to your CA. Register the signed certificate in your verifica
 The firmware looks for the private key in this order:
 
 1. **Compiled-in**: `REMOTEID_AUTH_PRIVATE_KEY_PEM` in Kconfig/sdkconfig. Used during development; takes priority when set.
-2. **NVS**: NVS namespace `remoteid_auth`, key `priv_key`. Used in production; the flash encryption hardware protects it at rest.
+2. **NVS**: NVS namespace `remoteid_auth`, key `private_key`. Used in production; the flash encryption hardware protects it at rest.
 
 If neither source has a key the firmware aborts at startup with an error log.
 
@@ -459,7 +459,7 @@ After first boot with flash encryption enabled the NVS partition is encrypted by
 
 ### Flash encryption
 
-Flash encryption uses a hardware AES-256 key generated on first boot and stored in eFuse — it never leaves the chip. All flash reads and writes go through the hardware engine transparently; no firmware changes are required.
+Flash encryption uses a hardware AES-256 key generated on first boot and stored in eFuse; it never leaves the chip. All flash reads and writes go through the hardware engine transparently; no firmware changes are required.
 
 Enable it in `menuconfig` under **Security features → Enable flash encryption on boot**. Choose **Development** mode during bring-up (allows re-flashing via serial) and **Release** mode for production units (irreversible; serial flashing is disabled).
 
@@ -477,6 +477,245 @@ idf.py encrypted-flash   # subsequent flashes: pre-encrypt before writing
 > **Warning:** Release mode permanently burns eFuses on first boot that disable serial flashing and JTAG. This cannot be undone without replacing the SoC. A device in Release mode without a working OTA path is unrecoverable.
 
 To prevent accidental enabling, the build will fail if `CONFIG_FLASH_ENCRYPTION_MODE_RELEASE` is set without an explicit confirmation. In `menuconfig`, navigate to **ESP Remote ID → Flash encryption Release mode confirmation** and type `UNRECOVERABLE` exactly. The build will be blocked until this string is present.
+
+## OTA update server
+
+The firmware includes an optional over-the-air management server. When triggered, the device suspends normal Remote ID operation and starts a Wi-Fi access point with a lightweight HTTP server at `http://192.168.4.1`. The server provides endpoints for firmware updates, NVS key provisioning, factory reset, and OTA rollback.
+
+OTA mode is required for updating sealed production devices that have flash encryption Release mode active (serial flashing is disabled after first boot in Release mode).
+
+### Enabling OTA
+
+Enable in `menuconfig` under **ESP Remote ID → OTA update server**:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `Enable OTA update server` | Disabled | Compile and include the OTA server. |
+| `OTA trigger GPIO` | `-1` | GPIO sampled at boot; hold low (button to GND) to enter OTA mode. `-1` disables GPIO triggering. |
+| `Always enter OTA mode on boot` | Disabled | Skip the GPIO check and always start the OTA server. Development only. |
+| `OTA Wi-Fi AP SSID` | `RemoteID-OTA` | SSID broadcast while OTA mode is active. |
+| `OTA Wi-Fi AP password` | *(empty)* | WPA2 passphrase (minimum 8 characters). Leave blank for an open AP. |
+| `OTA Wi-Fi AP channel` | `6` | 2.4 GHz channel for the OTA access point. |
+| `OTA HTTP server port` | `80` | TCP port for the HTTP management server. |
+
+### Entering OTA mode
+
+Wire a momentary push-button between the configured trigger GPIO and GND. Hold the button while resetting the device. The serial log will show:
+
+```
+I (nnn) remoteid_ota: OTA mode triggered (firmware 1.0.0), starting management server
+I (nnn) remoteid_ota: OTA server ready on http://192.168.4.1:80, connect to SSID 'RemoteID-OTA' (WPA2)
+I (nnn) remoteid_ota: Endpoints: GET /status  POST /update  POST /nvs  POST /factory-reset  POST /rollback
+```
+
+Connect to the AP (default SSID `RemoteID-OTA`) from a laptop or phone.
+
+### Testing OTA updates
+
+The steps below cover the full test cycle from first flash through update and rollback. All `make` commands assume the devcontainer with `ESPPORT` set and the device connected via the serial bridge.
+
+#### Step 1: first flash
+
+The OTA partition table must be on the device before the OTA server can function. A standard `make flash` writes everything required: bootloader, partition table, initial OTA data, and the firmware image into `ota_0`.
+
+```sh
+make flash
+```
+
+After boot the device runs normally from `ota_0`. The `ota_1` slot is empty and `rollback_possible` is `false`.
+
+#### Step 2: enable and configure OTA
+
+In `menuconfig` under **ESP Remote ID → OTA update server**:
+
+1. Enable **Enable OTA update server**.
+2. For bench testing without a physical button, also enable **Always enter OTA mode on boot**. This skips the GPIO check so every reset drops straight into OTA mode; disable it before deploying.
+3. For hardware testing, set **OTA trigger GPIO** to the pin wired to your button and leave **Always enter OTA mode** disabled.
+4. Optionally set a WPA2 passphrase under **OTA Wi-Fi AP password**.
+
+Rebuild and reflash after any menuconfig change:
+
+```sh
+make flash
+```
+
+#### Step 3: enter OTA mode and verify the server
+
+If **Always enter OTA mode** is enabled, reset the device. If using a GPIO trigger, hold the button while pressing reset. Confirm the server is up:
+
+```sh
+make ota-status
+```
+
+Expected output:
+
+```json
+{
+    "firmware_version": "1.0.0",
+    "idf_version": "v5.5.4",
+    "running_partition": "ota_0",
+    "next_partition": "ota_1",
+    "rollback_possible": false,
+    "free_heap": 215340
+}
+```
+
+#### Step 4: build and upload a new firmware image
+
+Make any change to the firmware (for example, bump the version string in `CMakeLists.txt` or add a log line), then build and upload:
+
+```sh
+make ota-flash
+```
+
+`make ota-flash` builds the firmware, reads `build/project_description.json` to locate the binary, and streams it to `POST /update`. The device validates the image and reboots into `ota_1` roughly 500 ms after the response is received. The terminal will show the curl response:
+
+```json
+{"status":"ok","message":"Update applied, rebooting"}
+```
+
+#### Step 5: confirm the update
+
+Wait a few seconds for the device to reboot, then enter OTA mode again and query status:
+
+```sh
+make ota-status
+```
+
+`running_partition` should now be `ota_1` and `rollback_possible` should be `true`, confirming the previous slot is intact.
+
+#### Step 6: test rollback
+
+With `rollback_possible: true`, test rolling back to the previous firmware:
+
+```sh
+make ota-rollback
+```
+
+The device reboots into `ota_0`. Query status again to confirm `running_partition` is back to `ota_0` and `rollback_possible` is now `false` (the `ota_1` slot was marked invalid by the rollback).
+
+#### Iterating further
+
+Repeating steps 4 and 5 alternates between `ota_0` and `ota_1` on every successful update. Each update overwrites the slot that is not currently running, so there is always exactly one previous firmware available for rollback after a successful update.
+
+If flash encryption Development mode is active, OTA update images are uploaded in plaintext over Wi-Fi and the OTA subsystem writes them encrypted to flash transparently. No `encrypted-flash` step is required for OTA updates.
+
+### HTTP API
+
+A machine-readable OpenAPI 3.0 specification for all endpoints is available at [`.dev/ota-openapi.yaml`](.dev/ota-openapi.yaml). Import it into any OpenAPI-compatible tool (Swagger UI, Insomnia, Postman, Bruno, etc.) for interactive testing against a live device.
+
+All endpoints accept and return JSON (except `POST /update` which accepts a raw binary body).
+
+#### `GET /status`
+
+Returns firmware and partition information.
+
+```sh
+curl http://192.168.4.1/status
+# or: make ota-status
+```
+
+```json
+{
+  "firmware_version": "1.0.0",
+  "idf_version": "v5.5.4",
+  "running_partition": "ota_0",
+  "next_partition": "ota_1",
+  "rollback_possible": false,
+  "free_heap": 215000
+}
+```
+
+#### `POST /update`
+
+Streams a new firmware binary to the next OTA partition and reboots. The device validates the image before setting the boot partition.
+
+```sh
+# Using curl directly:
+curl -X POST http://192.168.4.1/update \
+    --data-binary @build/remoteid.bin \
+    -H "Content-Type: application/octet-stream"
+
+# Using make (locates the binary automatically from build/project_description.json):
+make ota-flash
+# Override target: make ota-flash OTA_HOST=http://192.168.4.1
+```
+
+#### `POST /nvs`
+
+Writes a value to the device NVS. The primary use case is provisioning a new Ed25519 private key to a sealed device.
+
+```sh
+# Provision a private key (recommended via the provisioning script):
+make ota-provision-key KEY_FILE=device.pem
+# or: python .dev/scripts/provision_key.py device.pem --ota-url http://192.168.4.1
+
+# Manual JSON example (string value):
+curl -X POST http://192.168.4.1/nvs \
+    -H "Content-Type: application/json" \
+    -d '{"namespace":"remoteid_auth","key":"private_key","type":"string","value":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"}'
+
+# Binary value (base64-encoded blob):
+curl -X POST http://192.168.4.1/nvs \
+    -H "Content-Type: application/json" \
+    -d '{"namespace":"my_ns","key":"my_key","type":"blob","value":"<base64>"}'
+```
+
+Request body fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `namespace` | string | NVS namespace (max 15 characters) |
+| `key` | string | NVS key name (max 15 characters) |
+| `type` | string | `"string"` or `"blob"` |
+| `value` | string | Value to store; plain string or base64-encoded bytes for blobs |
+
+#### `POST /rollback`
+
+Marks the current firmware as invalid and reboots into the previous OTA partition. Requires an explicit confirmation string.
+
+```sh
+curl -X POST http://192.168.4.1/rollback \
+    -H "Content-Type: application/json" \
+    -d '{"confirm":"ROLLBACK"}'
+# or: make ota-rollback
+```
+
+Returns HTTP 409 if there is no previous firmware to roll back to.
+
+#### `POST /factory-reset`
+
+Erases the NVS partition and reboots. All stored keys and configuration are lost.
+
+```sh
+curl -X POST http://192.168.4.1/factory-reset \
+    -H "Content-Type: application/json" \
+    -d '{"confirm":"FACTORY-RESET"}'
+# or: make ota-factory-reset
+```
+
+> **Warning:** Factory reset permanently erases the NVS partition. If the device is in Release mode flash encryption and the provisioned private key was the only copy, it is gone. Back up private keys before performing a factory reset.
+
+### Partition table
+
+OTA requires a dual-partition layout. The firmware uses a custom `partitions.csv` instead of the single-app default:
+
+| Name | Type | Size | Purpose |
+|------|------|------|---------|
+| `nvs` | data/nvs | 24 KB | NVS key-value store (private key, config) |
+| `otadata` | data/ota | 8 KB | OTA boot slot tracking |
+| `phy_init` | data/phy | 4 KB | RF calibration data |
+| `ota_0` | app/ota_0 | 2 MB | First firmware slot |
+| `ota_1` | app/ota_1 | 2 MB | Second firmware slot |
+
+The first flash writes the firmware to `ota_0`. Subsequent OTA updates alternate between slots. `GET /status` shows which partition is active and which is next.
+
+### OTA security notes
+
+- The HTTP server has no authentication beyond the Wi-Fi AP password. Use a strong WPA2 passphrase in any environment with untrusted wireless neighbours.
+- OTA mode is only active while triggered. Normal Remote ID operation resumes after every reboot without the trigger asserted.
+- When flash encryption Release mode is active, the OTA server is the only way to update firmware or provisioned secrets after the device is sealed.
+- The AP MAC address is randomised on every OTA boot to avoid persistent device identification while in management mode.
 
 ### BLE schedule with authentication
 

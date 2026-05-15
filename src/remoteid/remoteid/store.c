@@ -119,7 +119,7 @@ static void apply_update_locked(const remoteid_store_update_t *update)
                      s_state.operator_latitude, s_state.operator_longitude,
                      s_state.operator_altitude_geo_m);
         } else {
-            ESP_LOGW(TAG, "arm detected but no GPS fix — takeoff position not captured");
+            ESP_LOGW(TAG, "arm detected but no GPS fix, takeoff position not captured");
         }
         break;
     }
