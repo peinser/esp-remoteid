@@ -7,6 +7,25 @@ config REMOTEID_TRANSPORT_BLE
         Broadcast OpenDroneID messages using BLE legacy advertisements with
         service UUID 0xFFFA. Disable this when testing Wi-Fi-only reception.
 
+config REMOTEID_TRANSPORT_BLE5_LONG_RANGE
+    bool "Enable Bluetooth 5 Long Range (LE Coded PHY)"
+    default n
+    help
+        Broadcast OpenDroneID messages using BLE 5 extended advertising with
+        LE Coded PHY (S=8 coding). This increases range at the cost of a lower
+        data rate and is a separate transport from BLE 4 legacy advertising.
+        Both can be enabled simultaneously.
+
+        Disabled by default: EU regulation 2019/945 only recognises BLE 4
+        legacy advertising and Wi-Fi Beacon as approved DRI transports. BLE 5
+        Extended Advertising is defined in ASTM F3411-22a (referenced by FAA
+        14 CFR Part 89) but is not listed in the EU delegated regulation, so a
+        BLE 5 only configuration is not compliant in the EU.
+
+        Most current receiver apps do not yet support BLE 5 Long Range. Enable
+        alongside BLE 4 for extended range, or alone when operating under FAA
+        rules and targeting F3411-22a compatible receivers.
+
 config REMOTEID_TRANSPORT_WIFI_BEACON
     bool "Enable Wi-Fi Beacon advertisements"
     default n

@@ -62,10 +62,7 @@ static uint8_t s_nan_send_counter;
 #if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON
 static uint16_t beacon_interval_tu(void)
 {
-    uint32_t interval_us = CONFIG_REMOTEID_WIFI_BEACON_TX_INTERVAL_MS * 1000U;
-    uint32_t interval_tu = interval_us / 1024U;
-
-    return (uint16_t)(interval_tu > 0 ? interval_tu : 1);
+    return (uint16_t)(CONFIG_REMOTEID_WIFI_BEACON_TX_INTERVAL_MS * 1000U / 1024U);
 }
 #endif
 
@@ -147,9 +144,6 @@ static esp_err_t init_wifi_driver(void)
     ap_config.ap.beacon_interval = CONFIG_REMOTEID_WIFI_BEACON_TX_INTERVAL_MS;
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap_config), TAG, "configure Wi-Fi AP");
-#endif
-
-#if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON
     ESP_RETURN_ON_ERROR(randomize_mac(WIFI_IF_AP), TAG, "randomize Wi-Fi AP MAC");
 #endif
 #if CONFIG_REMOTEID_TRANSPORT_WIFI_NAN

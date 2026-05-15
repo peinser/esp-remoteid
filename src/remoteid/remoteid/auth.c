@@ -87,8 +87,8 @@ static esp_err_t parse_pkcs8_ed25519(const char *pem, uint8_t seed[32])
     return ESP_OK;
 }
 
-static void fill_auth_pages(ODID_Auth_data pages[ODID_AUTH_MAX_PAGES],
-                            const uint8_t signature[64])
+static int fill_auth_pages(ODID_Auth_data pages[ODID_AUTH_MAX_PAGES],
+                           const uint8_t signature[64])
 {
     uint32_t timestamp = (uint32_t)(esp_timer_get_time() / 1000000ULL);
 
@@ -124,6 +124,8 @@ static void fill_auth_pages(ODID_Auth_data pages[ODID_AUTH_MAX_PAGES],
             }
         }
     }
+
+    return last_page_index;
 }
 
 // NVS namespace and key name for the provisioned private key.
@@ -197,10 +199,10 @@ void remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle)
     uint8_t signature[64];
     crypto_ed25519_sign(signature, s_private_key, message_set, sizeof(message_set));
 
-    ODID_Auth_data auth_data[ODID_AUTH_MAX_PAGES];
-    fill_auth_pages(auth_data, signature);
+    ODID_Auth_data auth_data[ODID_AUTH_MAX_PAGES] = {0};
+    int last_page = fill_auth_pages(auth_data, signature);
 
-    for (int page = 0; page < ODID_AUTH_MAX_PAGES; page++) {
+    for (int page = 0; page <= last_page; page++) {
         ODID_Auth_encoded encoded;
         if (encodeAuthMessage(&encoded, &auth_data[page]) != ODID_SUCCESS) {
             ESP_LOGE(TAG, "failed to encode auth page %d", page);
@@ -234,9 +236,9 @@ void remoteid_auth_sign_uas_data(ODID_UAS_Data *uas_data)
     uint8_t signature[64];
     crypto_ed25519_sign(signature, s_private_key, message_set, sizeof(message_set));
 
-    fill_auth_pages(uas_data->Auth, signature);
+    int last_page = fill_auth_pages(uas_data->Auth, signature);
 
-    for (int page = 0; page < ODID_AUTH_MAX_PAGES; page++) {
+    for (int page = 0; page <= last_page; page++) {
         uas_data->AuthValid[page] = 1;
     }
 }

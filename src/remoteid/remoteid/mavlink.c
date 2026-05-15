@@ -42,18 +42,11 @@ static bool target_matches(uint8_t target_system, uint8_t target_component)
 
 static void copy_mavlink_text(char *dst, size_t dst_len, const void *src, size_t src_len)
 {
-    size_t len = 0;
-    const char *text = (const char *)src;
-
-    while (len < src_len && text[len] != '\0') {
-        len++;
-    }
-
+    size_t len = strnlen((const char *)src, src_len);
     if (len >= dst_len) {
         len = dst_len - 1;
     }
-
-    memcpy(dst, text, len);
+    memcpy(dst, src, len);
     dst[len] = '\0';
 }
 

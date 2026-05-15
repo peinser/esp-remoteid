@@ -101,12 +101,15 @@ Obtain the WGS-84 altitude from a GNSS receiver or an online tool such as [https
 
 ### Transports
 
-BLE is enabled by default. Wi-Fi Beacon and Wi-Fi NAN are available but disabled by default so receiver testing can isolate one transport at a time.
+BLE 4 legacy is enabled by default. All other transports are disabled by default so receiver testing can isolate one transport at a time. BLE 4 legacy and BLE 5 Long Range can run simultaneously; each is an independent task on the same NimBLE host.
+
+> **Regulatory note on BLE 5 Long Range:** EU regulation 2019/945 only recognises BLE 4 legacy advertising and Wi-Fi Beacon as approved DRI transports. BLE 5 Extended Advertising is defined in ASTM F3411-22a (referenced by FAA 14 CFR Part 89) but is not listed in the EU delegated regulation. A BLE 5 only configuration is therefore not compliant in the EU. BLE 5 is disabled by default for this reason.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `Enable Bluetooth LE legacy advertisements` | Enabled | Broadcasts Android-compatible BLE service-data advertisements on UUID `0xFFFA`. |
-| `BLE advertisement rotation interval` | `250 ms` | BLE payload rotation cadence. Default keeps Location refreshed around 1 Hz while also rotating Basic ID, System, and Operator ID. |
+| `Enable Bluetooth LE legacy advertisements` | Enabled | Broadcasts OpenDroneID messages using BLE 4 legacy advertising on service UUID `0xFFFA`. Supported by all current receiver apps. |
+| `Enable Bluetooth 5 Long Range (LE Coded PHY)` | Disabled | Broadcasts OpenDroneID messages using BLE 5 extended advertising with LE Coded PHY (S=8). Increases range significantly at the cost of a lower air data rate. Can run alongside BLE 4 legacy. Disabled by default: not an approved transport under EU 2019/945. Valid under ASTM F3411-22a (FAA). Most current receiver apps do not yet support BLE 5. |
+| `BLE advertisement rotation interval` | `250 ms` | BLE payload rotation cadence for both BLE transports. Default keeps Location refreshed around 1 Hz while also rotating Basic ID, System, and Operator ID. |
 | `Enable Wi-Fi Beacon advertisements` | Disabled | Broadcasts OpenDroneID Message Pack payloads in Wi-Fi Beacon vendor IEs. |
 | `Enable Wi-Fi NAN advertisements` | Disabled | Broadcasts OpenDroneID Message Pack payloads in Wi-Fi NAN sync/action frames. |
 | `Wi-Fi Remote ID channel` | `6` | 2.4 GHz channel used by the ESP32-S3 Wi-Fi transport. |
