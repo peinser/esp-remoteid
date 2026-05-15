@@ -1,0 +1,363 @@
+openapi: "3.0.3"
+info:
+  title: Remote ID OTA Management API
+  version: "1.0"
+  description: |
+    Lightweight HTTP management server served by the Remote ID firmware when OTA
+    mode is active. The device creates a Wi-Fi access point (default SSID
+    `RemoteID-OTA`, configurable via Kconfig) and listens on port 80
+    (configurable). Connect to the AP and reach the server at
+    `http://192.168.4.1`.
+
+    All endpoints except `POST /update` consume and produce JSON. The server
+    has no authentication layer beyond the Wi-Fi AP password; use a strong WPA2
+    passphrase.
+
+    Normal Remote ID operation is suspended while OTA mode is active. All
+    mutating operations (`/update`, `/nvs`, `/factory-reset`, `/rollback`)
+    schedule a device restart 500 ms after the response is sent.
+
+servers:
+  - url: http://192.168.4.1
+    description: Device OTA AP (default IP)
+
+tags:
+  - name: info
+    description: Firmware and partition status
+  - name: firmware
+    description: Firmware update and rollback
+  - name: config
+    description: NVS configuration and factory reset
+
+paths:
+  /status:
+    get:
+      operationId: getStatus
+      summary: Firmware and partition status
+      tags: [info]
+      description: |
+        Returns the running firmware version, IDF version, active and next OTA
+        partition labels, rollback availability, and free heap. Use this to
+        confirm the device is in OTA mode before sending a firmware image.
+      responses:
+        "200":
+          description: Current firmware and partition status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              example:
+                firmware_version: "1.0.0"
+                idf_version: "v5.5.4"
+                running_partition: "ota_0"
+                next_partition: "ota_1"
+                rollback_possible: false
+                free_heap: 215340
+
+  /update:
+    post:
+      operationId: uploadFirmware
+      summary: Upload and apply a firmware image
+      tags: [firmware]
+      description: |
+        Streams the firmware binary to the next OTA partition. The device
+        validates the image header and SHA-256 checksum before switching the
+        boot partition. On success the device reboots into the new image
+        approximately 500 ms after the response is sent.
+
+        The request body must be the raw ESP-IDF application binary
+        (`build/esp_remoteid.bin`). The `Content-Length` header is required.
+
+        If validation fails the current firmware remains active and no reboot
+        occurs. Use `GET /status` after the timeout to confirm success, or
+        `POST /rollback` to revert a bad update.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: ESP-IDF application binary (.bin)
+      responses:
+        "200":
+          description: Image accepted — device is rebooting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+              example:
+                status: ok
+                message: "Update applied — rebooting"
+        "400":
+          description: |
+            Image validation failed (corrupt, wrong chip target, or checksum
+            mismatch). The device has not rebooted; the previous firmware is
+            still active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "408":
+          description: Upload stalled — the request body was not fully received within the socket timeout.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error (no OTA partition available, flash write failure, or OOM).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /nvs:
+    post:
+      operationId: writeNvs
+      summary: Write an NVS key-value entry
+      tags: [config]
+      description: |
+        Writes a single key-value entry to the device NVS (non-volatile
+        storage). The primary use case is provisioning or replacing the Ed25519
+        private key on a sealed device without serial access.
+
+        String values are stored as-is. Blob values must be base64-encoded in
+        the request; the server decodes them before writing to NVS.
+
+        NVS namespace and key names are limited to 15 characters by the ESP-IDF
+        NVS API. Writing an existing key overwrites it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NvsWriteRequest"
+            examples:
+              private_key:
+                summary: Provision an Ed25519 private key
+                value:
+                  namespace: remoteid_auth
+                  key: private_key
+                  type: string
+                  value: "-----BEGIN PRIVATE KEY-----\\nMC4CAQAwBQYDK2VwBCIEI...\\n-----END PRIVATE KEY-----\\n"
+              blob:
+                summary: Write a binary blob (base64-encoded)
+                value:
+                  namespace: my_namespace
+                  key: my_key
+                  type: blob
+                  value: "SGVsbG8gd29ybGQ="
+      responses:
+        "200":
+          description: Value written successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+              example:
+                status: ok
+        "400":
+          description: Malformed request (invalid JSON, missing fields, unknown type, or invalid base64).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: NVS write failed (namespace does not exist, flash full, or internal error).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /factory-reset:
+    post:
+      operationId: factoryReset
+      summary: Erase NVS partition and reboot
+      tags: [config]
+      description: |
+        Erases the entire NVS partition and reboots the device. All stored
+        configuration is permanently deleted, including provisioned private keys
+        and any other NVS entries.
+
+        **This action is irreversible.** If flash encryption Release mode is
+        active and the private key was provisioned into NVS, the key is gone
+        after a factory reset. Back up the key before proceeding.
+
+        The request body must include `{"confirm":"FACTORY-RESET"}` to prevent
+        accidental erasure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmRequest"
+            example:
+              confirm: FACTORY-RESET
+      responses:
+        "200":
+          description: NVS erased — device is rebooting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+              example:
+                status: ok
+                message: "NVS erased — rebooting"
+        "400":
+          description: Confirmation string missing or incorrect.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /rollback:
+    post:
+      operationId: rollback
+      summary: Roll back to the previous firmware
+      tags: [firmware]
+      description: |
+        Marks the currently running firmware partition as invalid and reboots
+        into the previous OTA partition. Useful for recovering from a bad
+        firmware update without serial access.
+
+        Rollback is only possible if the previous slot contains a valid
+        firmware image that was previously marked as confirmed. `GET /status`
+        includes a `rollback_possible` field indicating availability before
+        attempting.
+
+        The request body must include `{"confirm":"ROLLBACK"}` to prevent
+        accidental rollback.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmRequest"
+            example:
+              confirm: ROLLBACK
+      responses:
+        "200":
+          description: Rollback initiated — device is rebooting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+              example:
+                status: ok
+                message: "Rolling back — rebooting"
+        "400":
+          description: Confirmation string missing or incorrect.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: No previous firmware available to roll back to.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                status: error
+                message: "No previous firmware to roll back to"
+
+components:
+  schemas:
+    StatusResponse:
+      type: object
+      required:
+        - firmware_version
+        - idf_version
+        - running_partition
+        - next_partition
+        - rollback_possible
+        - free_heap
+      properties:
+        firmware_version:
+          type: string
+          description: Application version string set at build time.
+          example: "1.0.0"
+        idf_version:
+          type: string
+          description: ESP-IDF version the firmware was built with.
+          example: "v5.5.4"
+        running_partition:
+          type: string
+          description: Label of the currently active OTA partition.
+          example: "ota_0"
+        next_partition:
+          type: string
+          description: Label of the partition that will receive the next OTA update.
+          example: "ota_1"
+        rollback_possible:
+          type: boolean
+          description: Whether a valid previous firmware exists for rollback.
+          example: false
+        free_heap:
+          type: integer
+          description: Available heap memory in bytes at query time.
+          example: 215340
+
+    OkResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        message:
+          type: string
+          description: Human-readable description of the action taken.
+          example: "Update applied — rebooting"
+
+    ErrorResponse:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+          description: Human-readable description of the error.
+          example: "OTA validation failed — image may be corrupt or mismatched"
+
+    NvsWriteRequest:
+      type: object
+      required: [namespace, key, type, value]
+      properties:
+        namespace:
+          type: string
+          maxLength: 15
+          description: NVS namespace (ESP-IDF limit is 15 characters).
+          example: remoteid_auth
+        key:
+          type: string
+          maxLength: 15
+          description: NVS key name (ESP-IDF limit is 15 characters).
+          example: private_key
+        type:
+          type: string
+          enum: [string, blob]
+          description: |
+            Storage type. `string` stores the value as a UTF-8 string.
+            `blob` stores the base64-decoded bytes as a binary blob.
+          example: string
+        value:
+          type: string
+          description: |
+            Value to store. For `type=string`, the plain string value.
+            For `type=blob`, the base64-encoded binary content.
+          example: "-----BEGIN PRIVATE KEY-----\\nMC4CAQAwBQYDK2VwBCIEI...\\n-----END PRIVATE KEY-----\\n"
+
+    ConfirmRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm:
+          type: string
+          description: |
+            Explicit confirmation string required to prevent accidental
+            destructive operations. Must be exactly `FACTORY-RESET` for
+            `/factory-reset` or `ROLLBACK` for `/rollback`.
+          example: FACTORY-RESET

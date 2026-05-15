@@ -512,6 +512,8 @@ Connect to the AP (default SSID `RemoteID-OTA`) from a laptop or phone.
 
 ### HTTP API
 
+A machine-readable OpenAPI 3.0 specification for all endpoints is available at [`.dev/ota-openapi.yaml`](.dev/ota-openapi.yaml). Import it into any OpenAPI-compatible tool (Swagger UI, Insomnia, Postman, Bruno, etc.) for interactive testing against a live device.
+
 All endpoints accept and return JSON (except `POST /update` which accepts a raw binary body).
 
 #### `GET /status`
