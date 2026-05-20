@@ -4,6 +4,7 @@ idf_component_register(
         "ota/ota.c"
         "remoteid/auth.c"
         "remoteid/ble.c"
+        "remoteid/dronecan.c"
         "remoteid/encode.c"
         "led/indicator.c"
         "led/lighting.c"
@@ -20,9 +21,11 @@ idf_component_register(
     REQUIRES
         app_update
         bt
+        driver
         json
         esp_driver_gpio
         esp_driver_rmt
+        esp_driver_twai
         esp_driver_uart
         esp_event
         esp_http_server

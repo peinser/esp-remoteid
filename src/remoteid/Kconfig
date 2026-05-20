@@ -145,6 +145,100 @@ config REMOTEID_MAVLINK_TARGET_COMPONENT
 
 endif # REMOTEID_MAVLINK_INPUT
 
+config REMOTEID_DRONECAN_INPUT
+    bool "Enable DroneCAN input"
+    default n
+    help
+        Enable the ESP32 TWAI/CAN controller and listen for DroneCAN extended
+        CAN frames from a flight controller. DroneCAN is the maintained UAVCAN
+        v0-derived protocol used by current ArduPilot/PX4 DroneCAN devices;
+        it is distinct from OpenCyphal/UAVCAN v1. This first integration
+        milestone starts the CAN transport and decodes the standard DroneCAN
+        GNSS Fix2 message plus a project-specific Remote ID identity message
+        into the Remote ID state.
+
+if REMOTEID_DRONECAN_INPUT
+
+config REMOTEID_DRONECAN_RX_GPIO
+    int "DroneCAN RX GPIO"
+    default -1
+    range -1 48
+    help
+        Physical ESP32-S3 GPIO connected to the CAN transceiver RXD output.
+        This must be configured when DroneCAN input is enabled.
+
+config REMOTEID_DRONECAN_TX_GPIO
+    int "DroneCAN TX GPIO"
+    default -1
+    range -1 48
+    help
+        Physical ESP32-S3 GPIO connected to the CAN transceiver TXD input.
+        This must be configured when DroneCAN input is enabled, even for
+        passive listening, because the TWAI peripheral owns both pins.
+
+choice REMOTEID_DRONECAN_BITRATE
+    prompt "DroneCAN bitrate"
+    default REMOTEID_DRONECAN_BITRATE_1000000
+
+config REMOTEID_DRONECAN_BITRATE_125000
+    bool "125 kbit/s"
+
+config REMOTEID_DRONECAN_BITRATE_250000
+    bool "250 kbit/s"
+
+config REMOTEID_DRONECAN_BITRATE_500000
+    bool "500 kbit/s"
+
+config REMOTEID_DRONECAN_BITRATE_1000000
+    bool "1 Mbit/s"
+
+endchoice
+
+config REMOTEID_DRONECAN_NODE_ID
+    int "Local DroneCAN node ID"
+    default 0
+    range 0 127
+    help
+        Local DroneCAN node ID reserved for future active participation.
+        Leave at 0 for the current receive-only implementation. The firmware
+        may acknowledge CAN frames in normal CAN mode, but it does not publish
+        DroneCAN application transfers yet.
+
+config REMOTEID_DRONECAN_ACCEPT_ANONYMOUS
+    bool "Accept anonymous DroneCAN transfers"
+    default y
+    help
+        Accept message transfers from anonymous source node ID 0. Disable if
+        your bus uses node ID 0 only for allocation and you want to ignore it.
+
+config REMOTEID_DRONECAN_LISTEN_ONLY
+    bool "Use CAN listen-only mode"
+    default n
+    help
+        Put the ESP32 TWAI controller into listen-only mode. In listen-only
+        mode the ESP receives frames but does not acknowledge them on the CAN
+        bus. Leave this disabled for normal FC-to-ESP operation, especially if
+        the ESP is the only other CAN node, because the flight controller needs
+        at least one receiver to ACK transmitted frames.
+
+config REMOTEID_DRONECAN_REMOTEID_IDENTITY_DTID
+    int "Remote ID identity DroneCAN data type ID"
+    default 20000
+    range 1024 32767
+    help
+        Vendor-specific DroneCAN message data type ID used for the custom
+        Remote ID identity message. The publisher and this firmware must use
+        the same ID. Keep this outside the standard DroneCAN data type range
+        and avoid IDs already used by other vendor-specific messages on the
+        bus.
+
+config REMOTEID_DRONECAN_TASK_STACK
+    int "DroneCAN input task stack size"
+    default 4096
+    range 3072 8192
+
+endif # REMOTEID_DRONECAN_INPUT
+
 choice REMOTEID_ID_TYPE
     prompt "UAS ID type"
     default REMOTEID_ID_TYPE_CAA_REG

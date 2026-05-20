@@ -206,6 +206,91 @@ Flight controller TX  ->  ESP32-S3 MAVLink UART RX GPIO
 Flight controller GND ->  ESP32-S3 GND
 ```
 
+### DroneCAN Input
+
+DroneCAN input development has started and is disabled by default. This targets the DroneCAN protocol used by ArduPilot and PX4 DroneCAN peripherals and flight-controller buses. DroneCAN is the maintained UAVCAN v0-derived protocol; it is distinct from OpenCyphal/UAVCAN v1. The current milestone brings up the ESP32-S3 TWAI/CAN controller, receives DroneCAN extended CAN frames, reassembles supported multi-frame transfers, and decodes `uavcan.equipment.gnss.Fix2` plus a project-specific Remote ID identity message into the Remote ID state.
+
+No extra git submodule is required for this first milestone; it uses ESP-IDF's built-in TWAI driver. A later milestone that decodes DroneCAN DSDL cleanly may add a small UAVCAN/DroneCAN support library or generated DSDL sources, but that should be decided when the target flight-controller messages are confirmed.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `Enable DroneCAN input` | Disabled | Starts the DroneCAN/TWAI receive task. |
+| `DroneCAN RX GPIO` | `-1` | ESP32-S3 GPIO connected to the CAN transceiver RXD output. Must be configured when DroneCAN is enabled. |
+| `DroneCAN TX GPIO` | `-1` | ESP32-S3 GPIO connected to the CAN transceiver TXD input. Must be configured because the TWAI peripheral owns both pins, even in listen-only mode. |
+| `DroneCAN bitrate` | `1 Mbit/s` | CAN bus bitrate. Common DroneCAN setups use `1 Mbit/s`; match the flight controller bus. |
+| `Local DroneCAN node ID` | `0` | Reserved for future active participation. Current implementation receives only and does not publish DroneCAN transfers. |
+| `Accept anonymous DroneCAN transfers` | Enabled | Allows source node ID `0` message transfers. |
+| `Use CAN listen-only mode` | Disabled | Sniffs the bus without ACKing frames. Leave disabled for normal FC-to-ESP operation. |
+| `Remote ID identity DroneCAN data type ID` | `20000` | Vendor-specific DroneCAN data type ID for the custom Remote ID identity message. Publisher and receiver must match. |
+
+Currently decoded messages:
+
+| DroneCAN message | Data type ID | Remote ID fields updated |
+|------------------|--------------|--------------------------|
+| `uavcan.equipment.gnss.Fix2` | `1063` | Latitude, longitude, altitude, horizontal speed, vertical speed, track direction, fix status, and coarse accuracy flags. |
+| `com.peinser.remoteid.Identity` | `20000` by default | Basic ID UAS ID/type, UA type, and Operator ID. |
+
+The firmware also recognizes `uavcan.protocol.NodeStatus` (`341`) and `uavcan.equipment.gnss.Fix` (`1060`) in logs, but `Fix2` and the custom identity message are the messages that update Remote ID state in this milestone.
+
+#### Custom Remote ID Identity Message
+
+ArduPilot/PX4 DroneCAN does not define a standard Remote ID identity message equivalent to MAVLink `OPEN_DRONE_ID_BASIC_ID` and `OPEN_DRONE_ID_OPERATOR_ID`. This firmware therefore supports a project-specific DroneCAN message for publishers that you control.
+
+Use this DSDL definition and configure its data type ID to match `REMOTEID_DRONECAN_REMOTEID_IDENTITY_DTID`. A suitable file path for a publisher DSDL tree is `com/peinser/remoteid/20000.Identity.uavcan`:
+
+```text
+# com.peinser.remoteid.Identity
+# Default data type ID used by this firmware: 20000
+
+uint8 id_type        # ASTM/OpenDroneID ODID_idtype_t value
+uint8 ua_type        # ASTM/OpenDroneID ODID_uatype_t value
+uint8[20] uas_id     # Null-padded ASCII, max 20 bytes
+uint8[20] operator_id # Null-padded ASCII, max 20 bytes
+```
+
+The message is intentionally fixed-size so small publisher implementations do not need dynamic array serialization. If the text fields are shorter than 20 bytes, pad the remaining bytes with zero. If they are exactly 20 bytes, omit the null terminator.
+
+ArduPilot/PX4 will not emit this message by default. A publisher must be added through flight-controller firmware changes, scripting support, or a companion node on the same DroneCAN bus.
+
+By default the ESP32 TWAI controller runs in normal CAN mode. It does not transmit DroneCAN application messages, but it does acknowledge received CAN frames at the bus level. This matters on a two-node bus with only the flight controller and ESP module: without an ACKing receiver, the flight controller will treat its CAN transmissions as failed. Enable listen-only mode only when sniffing an already healthy bus with at least one other ACKing node.
+
+Basic wiring with an external 3.3 V-compatible CAN transceiver:
+
+```text
+ESP32-S3                     CAN transceiver                 Flight controller CAN port
+--------                     ---------------                 --------------------------
+DroneCAN TX GPIO  -------->  TXD
+DroneCAN RX GPIO  <--------  RXD
+3V3              ----------  VCC       (if using a 3.3 V transceiver/module)
+GND              ----------  GND  -------------------------  GND
+                              CANH -------------------------  CANH / CAN_H / H
+                              CANL -------------------------  CANL / CAN_L / L
+```
+
+Use a CAN transceiver that matches the ESP32-S3 IO voltage on `TXD`/`RXD`. The ESP32-S3 GPIOs are 3.3 V logic, so a 5 V CAN transceiver module is only safe if its digital IO side is explicitly 3.3 V compatible. Many bare CAN transceiver boards expose `VCC`, `GND`, `TXD`, `RXD`, `CANH`, and `CANL`; connect `CANH`/`CANL` only to the bus, never directly to ESP32 GPIO pins.
+
+DroneCAN is a shared two-wire bus. The bus should be one physical trunk with short stubs to each node:
+
+```text
+120 ohm terminator                                             120 ohm terminator
+       |                                                              |
+       v                                                              v
+CANH ===+======================+======================+===============+=== CANH
+        |                      |                      |
+        |                      |                      |
+       FC CAN port            ESP32 CAN transceiver   Other DroneCAN node
+        |                      |                      |
+CANL ===+======================+======================+===============+=== CANL
+```
+
+Termination rules:
+
+- Install exactly two 120 ohm terminators, one at each physical end of the CANH/CANL trunk.
+- Do not add a third terminator on the ESP module if the flight controller and another end-of-bus device already provide termination.
+- If the ESP transceiver is physically at one end of the bus, enable or install one 120 ohm terminator at the ESP end and one at the opposite end.
+- With power off, a correctly terminated bus normally measures about 60 ohm between `CANH` and `CANL` because the two 120 ohm terminators are in parallel.
+- Keep the ESP transceiver stub short. If possible, place it on the trunk rather than at the end of a long branch.
+
 For Android app testing, use one transport at a time because many receiver apps do not display whether a detected aircraft came from BLE or Wi-Fi.
 
 ### Minimum configuration checklist
