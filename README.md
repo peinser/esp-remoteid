@@ -724,6 +724,121 @@ The first flash writes the firmware to `ota_0`. Subsequent OTA updates alternate
 
 When authentication is enabled the BLE schedule extends from 8 to 12 slots (3 seconds per full cycle at 250 ms per slot). Auth pages 0–3 are appended after the base message rotation. The Location and System messages are refreshed immediately before signing so auth pages always cover the most recent state.
 
+## Web Configurator (Cloudbuild)
+
+A web-based firmware configurator allows users to configure and build the firmware without installing the ESP-IDF toolchain. The user fills in a form (UAS ID, operator ID, transports, position, etc.), and the backend generates a `sdkconfig` overlay, triggers a GitHub Actions build, and returns a ready-to-flash firmware ZIP.
+
+Because the repository is public, GitHub Actions build minutes are free and unlimited.
+
+### Architecture
+
+```
+Browser (web form)
+    │  POST /build { uas_id, operator_id, transports, ... }
+    ▼
+Cloudbuild server (.dev/cloudbuild/)
+    │  1. Validate inputs
+    │  2. Render sdkconfig overlay
+    │  3. Base64-encode overlay
+    │  4. Generate correlation UUID (build_id)
+    │  5. POST /actions/workflows/cloudbuild.yml/dispatches
+    │     via GitHub API with { build-id, sdkconfig-overlay-b64 }
+    │  6. Return { build_id }
+    ▼
+Browser polls GET /build/{build_id}/status
+    │
+    ▼
+Cloudbuild server
+    → lists GitHub Actions runs for cloudbuild.yml
+    → matches run by name (run-name: cloudbuild-{build_id})
+    → returns { status, conclusion, download_url? }
+    │
+    ▼ (completed + success)
+Browser GET /build/{build_id}/download
+    → server proxies artifact ZIP from GitHub (token never reaches browser)
+```
+
+The `run-name: cloudbuild-{build_id}` field on the workflow is what ties a dispatch to a specific poll without needing to store server-side state.
+
+### Reusable action
+
+The GitHub Actions build logic is extracted into a reusable workflow at [`.dev/actions/`](.dev/actions/). Publish that directory's contents into the `peinser/actions` repository and tag it `v1`. Any other ESP-IDF project can then use it:
+
+```yaml
+jobs:
+  firmware:
+    uses: peinser/actions/.github/workflows/esp-remoteid-build.yml@v1
+    with:
+      idf-version: release-v5.5
+      target: esp32s3
+    permissions:
+      contents: read
+```
+
+### Self-hosting the configurator backend
+
+The cloudbuild server is a Node.js 22 service at [`.dev/cloudbuild/`](.dev/cloudbuild/). It requires a GitHub fine-grained PAT with `actions: write` and `actions: read` on this repository.
+
+```sh
+cp .dev/cloudbuild/.env.example .dev/cloudbuild/.env
+# Edit .env: set GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO
+docker compose -f .dev/cloudbuild/docker-compose.yml up -d
+```
+
+Point `ALLOWED_ORIGIN` at your web configurator frontend's origin. Put the service behind a reverse proxy (nginx, Caddy) for TLS before exposing it publicly.
+
+For local development without Docker:
+
+```sh
+cd .dev/cloudbuild
+cp .env.example .env   # fill in GITHUB_TOKEN
+npm install
+npm run dev            # runs on http://localhost:3000
+```
+
+### Publishing the reusable action
+
+```sh
+# Copy the contents of .dev/actions/ into the peinser/actions repository, then:
+git tag v1
+git push origin main v1
+```
+
+The cloudbuild.yml workflow in this repository references `peinser/actions/.github/workflows/esp-remoteid-build.yml@v1`. Create and tag that repository before triggering any cloudbuild dispatch.
+
+### API reference
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/healthz` | GET | Health check; returns `{"ok":true}` |
+| `/build` | POST | Submit a build request; returns `{"build_id":"..."}` |
+| `/build/:id/status` | GET | Poll build status; returns `{status, conclusion, run_url, download_url?}` |
+| `/build/:id/download` | GET | Download firmware ZIP (proxied from GitHub) |
+
+**POST /build request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `uas_id` | string | Yes | UAS ID, max 20 characters |
+| `operator_id` | string | Yes | Operator registration ID, max 20 characters |
+| `id_type` | string | Yes | `caa_reg` or `serial` |
+| `ua_type` | string | Yes | `multirotor`, `aeroplane`, `hybrid_lift`, or `other` |
+| `eu_category` | string | Yes | `undeclared`, `open`, `specific`, or `certified` |
+| `eu_class` | string | Yes | `undeclared`, `c0` through `c6` |
+| `transport_ble` | boolean | Yes | Enable BLE 4 legacy advertising |
+| `transport_ble5` | boolean | Yes | Enable BLE 5 Long Range |
+| `transport_wifi_beacon` | boolean | Yes | Enable Wi-Fi Beacon |
+| `transport_wifi_nan` | boolean | Yes | Enable Wi-Fi NAN |
+| `ble_tx_power` | string | No | `n12`, `n9`, `n6`, `n3`, `n0`, `p3`, `p6`, or `p9` |
+| `ble_tx_interval_ms` | number | No | 100-5000 ms, default 250 |
+| `has_position` | boolean | No | Broadcast a known takeoff position |
+| `takeoff_lat_1e6` | number | If `has_position` | Latitude degrees x 10^6 |
+| `takeoff_lon_1e6` | number | If `has_position` | Longitude degrees x 10^6 |
+| `takeoff_alt_m` | number | If `has_position` | Altitude above WGS-84 ellipsoid in metres |
+| `startup_delay_ms` | number | No | 0-60000 ms, defaults to 0 for cloudbuild |
+| `ota_enable` | boolean | No | Include OTA update server |
+| `ota_trigger_gpio` | number | No | GPIO for OTA trigger button (-1 to 48) |
+
 ## TODO
 
 - [ ] DroneCAN inputs and state processing.

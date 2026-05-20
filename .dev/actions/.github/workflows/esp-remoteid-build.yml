@@ -1,0 +1,135 @@
+# Reusable ESP-IDF build workflow.
+#
+# Publish this directory as a separate GitHub repository
+# (e.g. peinser/esp-idf-build-action) so other projects can call it with:
+#
+#   jobs:
+#     firmware:
+#       uses: peinser/esp-idf-build-action/.github/workflows/build.yml@v1
+#       with:
+#         idf-version: release-v5.5
+#         target: esp32s3
+#       permissions:
+#         contents: read
+
+name: ESP-IDF Build
+
+on:
+  workflow_call:
+    inputs:
+      idf-version:
+        description: espressif/idf Docker image tag (e.g. release-v5.5, v5.4.1)
+        type: string
+        default: release-v5.5
+      target:
+        description: ESP-IDF chip target (esp32s3, esp32, esp32c3, ...)
+        type: string
+        default: esp32s3
+      project-path:
+        description: Path to the ESP-IDF project root relative to the repo root
+        type: string
+        default: .
+      sdkconfig-overlay-b64:
+        description: >
+          Base64-encoded sdkconfig.defaults overlay applied on top of the
+          project's own sdkconfig.defaults. Use this to inject per-build
+          configuration (e.g. identity fields from a web configurator) without
+          modifying the source tree.
+        type: string
+        default: ''
+      artifact-name:
+        description: Name for the uploaded GitHub Actions artifact
+        type: string
+        default: firmware
+      artifact-retention-days:
+        description: How many days to keep the artifact (1-90)
+        type: number
+        default: 7
+    outputs:
+      artifact-id:
+        description: GitHub Actions artifact ID
+        value: ${{ jobs.build.outputs.artifact-id }}
+      artifact-url:
+        description: GitHub Actions artifact URL (requires authentication to download)
+        value: ${{ jobs.build.outputs.artifact-url }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+
+    container:
+      image: docker.io/espressif/idf:${{ inputs.idf-version }}
+      env:
+        IDF_CCACHE_ENABLE: "1"
+        CCACHE_DIR: /github/home/.ccache
+
+    outputs:
+      artifact-id:  ${{ steps.upload.outputs.artifact-id }}
+      artifact-url: ${{ steps.upload.outputs.artifact-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: /github/home/.ccache
+          key: idf-${{ inputs.idf-version }}-${{ inputs.target }}-${{ hashFiles('**/*.c', '**/*.h', '**/*.cpp', '**/CMakeLists.txt', '**/idf_component.yml') }}
+          restore-keys: |
+            idf-${{ inputs.idf-version }}-${{ inputs.target }}-
+
+      - name: Write sdkconfig overlay
+        if: inputs.sdkconfig-overlay-b64 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "${{ inputs.sdkconfig-overlay-b64 }}" \
+            | base64 --decode > "${{ inputs.project-path }}/sdkconfig.overlay"
+          echo "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.overlay" >> "$GITHUB_ENV"
+
+      - name: Build
+        shell: bash
+        working-directory: ${{ inputs.project-path }}
+        run: |
+          set -euo pipefail
+          . /opt/esp/idf/export.sh
+          idf.py set-target ${{ inputs.target }} build
+
+      - name: Print firmware size
+        shell: bash
+        working-directory: ${{ inputs.project-path }}
+        run: |
+          set -euo pipefail
+          . /opt/esp/idf/export.sh
+          idf.py size
+
+      - name: Locate app binary
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          project="${{ inputs.project-path }}"
+          app=$(python3 -c \
+            "import json; d=json.load(open('$project/build/project_description.json')); print(d['app_bin'])")
+          echo "app=$project/build/$app" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          retention-days: ${{ inputs.artifact-retention-days }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.locate.outputs.app }}
+            ${{ inputs.project-path }}/build/bootloader/bootloader.bin
+            ${{ inputs.project-path }}/build/partition_table/partition-table.bin
+            ${{ inputs.project-path }}/build/flasher_args.json
+            ${{ inputs.project-path }}/build/flash_args

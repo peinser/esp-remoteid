@@ -54,7 +54,7 @@ jobs:
 
     steps:
     - name: Git Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@v4
       with:
         submodules: recursive
 
@@ -88,7 +88,7 @@ jobs:
         idf.py size
 
     - name: Upload firmware artifacts
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v4
       with:
         name: esp-remoteid-${{ matrix.target }}-${{ github.sha }}
         if-no-files-found: error
