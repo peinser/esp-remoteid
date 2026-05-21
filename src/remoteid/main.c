@@ -8,6 +8,7 @@
 #include "ota/ota.h"
 #include "remoteid/auth.h"
 #include "remoteid/ble.h"
+#include "remoteid/dronecan.h"
 #include "led/indicator.h"
 #include "led/lighting.h"
 #include "remoteid/mavlink.h"
@@ -37,6 +38,10 @@ void app_main(void)
 
 #if CONFIG_REMOTEID_MAVLINK_INPUT
     ESP_ERROR_CHECK(remoteid_mavlink_start());
+#endif
+
+#if CONFIG_REMOTEID_DRONECAN_INPUT
+    ESP_ERROR_CHECK(remoteid_dronecan_start());
 #endif
 
     if (CONFIG_REMOTEID_STARTUP_DELAY_MS > 0) {

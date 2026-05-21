@@ -206,6 +206,91 @@ Flight controller TX  ->  ESP32-S3 MAVLink UART RX GPIO
 Flight controller GND ->  ESP32-S3 GND
 ```
 
+### DroneCAN Input
+
+DroneCAN input development has started and is disabled by default. This targets the DroneCAN protocol used by ArduPilot and PX4 DroneCAN peripherals and flight-controller buses. DroneCAN is the maintained UAVCAN v0-derived protocol; it is distinct from OpenCyphal/UAVCAN v1. The current milestone brings up the ESP32-S3 TWAI/CAN controller, receives DroneCAN extended CAN frames, reassembles supported multi-frame transfers, and decodes `uavcan.equipment.gnss.Fix2` plus a project-specific Remote ID identity message into the Remote ID state.
+
+No extra git submodule is required for this first milestone; it uses ESP-IDF's built-in TWAI driver. A later milestone that decodes DroneCAN DSDL cleanly may add a small UAVCAN/DroneCAN support library or generated DSDL sources, but that should be decided when the target flight-controller messages are confirmed.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `Enable DroneCAN input` | Disabled | Starts the DroneCAN/TWAI receive task. |
+| `DroneCAN RX GPIO` | `-1` | ESP32-S3 GPIO connected to the CAN transceiver RXD output. Must be configured when DroneCAN is enabled. |
+| `DroneCAN TX GPIO` | `-1` | ESP32-S3 GPIO connected to the CAN transceiver TXD input. Must be configured because the TWAI peripheral owns both pins, even in listen-only mode. |
+| `DroneCAN bitrate` | `1 Mbit/s` | CAN bus bitrate. Common DroneCAN setups use `1 Mbit/s`; match the flight controller bus. |
+| `Local DroneCAN node ID` | `0` | Reserved for future active participation. Current implementation receives only and does not publish DroneCAN transfers. |
+| `Accept anonymous DroneCAN transfers` | Enabled | Allows source node ID `0` message transfers. |
+| `Use CAN listen-only mode` | Disabled | Sniffs the bus without ACKing frames. Leave disabled for normal FC-to-ESP operation. |
+| `Remote ID identity DroneCAN data type ID` | `20000` | Vendor-specific DroneCAN data type ID for the custom Remote ID identity message. Publisher and receiver must match. |
+
+Currently decoded messages:
+
+| DroneCAN message | Data type ID | Remote ID fields updated |
+|------------------|--------------|--------------------------|
+| `uavcan.equipment.gnss.Fix2` | `1063` | Latitude, longitude, altitude, horizontal speed, vertical speed, track direction, fix status, and coarse accuracy flags. |
+| `com.peinser.remoteid.Identity` | `20000` by default | Basic ID UAS ID/type, UA type, and Operator ID. |
+
+The firmware also recognizes `uavcan.protocol.NodeStatus` (`341`) and `uavcan.equipment.gnss.Fix` (`1060`) in logs, but `Fix2` and the custom identity message are the messages that update Remote ID state in this milestone.
+
+#### Custom Remote ID Identity Message
+
+ArduPilot/PX4 DroneCAN does not define a standard Remote ID identity message equivalent to MAVLink `OPEN_DRONE_ID_BASIC_ID` and `OPEN_DRONE_ID_OPERATOR_ID`. This firmware therefore supports a project-specific DroneCAN message for publishers that you control.
+
+Use this DSDL definition and configure its data type ID to match `REMOTEID_DRONECAN_REMOTEID_IDENTITY_DTID`. A suitable file path for a publisher DSDL tree is `com/peinser/remoteid/20000.Identity.uavcan`:
+
+```text
+# com.peinser.remoteid.Identity
+# Default data type ID used by this firmware: 20000
+
+uint8 id_type        # ASTM/OpenDroneID ODID_idtype_t value
+uint8 ua_type        # ASTM/OpenDroneID ODID_uatype_t value
+uint8[20] uas_id     # Null-padded ASCII, max 20 bytes
+uint8[20] operator_id # Null-padded ASCII, max 20 bytes
+```
+
+The message is intentionally fixed-size so small publisher implementations do not need dynamic array serialization. If the text fields are shorter than 20 bytes, pad the remaining bytes with zero. If they are exactly 20 bytes, omit the null terminator.
+
+ArduPilot/PX4 will not emit this message by default. A publisher must be added through flight-controller firmware changes, scripting support, or a companion node on the same DroneCAN bus.
+
+By default the ESP32 TWAI controller runs in normal CAN mode. It does not transmit DroneCAN application messages, but it does acknowledge received CAN frames at the bus level. This matters on a two-node bus with only the flight controller and ESP module: without an ACKing receiver, the flight controller will treat its CAN transmissions as failed. Enable listen-only mode only when sniffing an already healthy bus with at least one other ACKing node.
+
+Basic wiring with an external 3.3 V-compatible CAN transceiver:
+
+```text
+ESP32-S3                     CAN transceiver                 Flight controller CAN port
+--------                     ---------------                 --------------------------
+DroneCAN TX GPIO  -------->  TXD
+DroneCAN RX GPIO  <--------  RXD
+3V3              ----------  VCC       (if using a 3.3 V transceiver/module)
+GND              ----------  GND  -------------------------  GND
+                              CANH -------------------------  CANH / CAN_H / H
+                              CANL -------------------------  CANL / CAN_L / L
+```
+
+Use a CAN transceiver that matches the ESP32-S3 IO voltage on `TXD`/`RXD`. The ESP32-S3 GPIOs are 3.3 V logic, so a 5 V CAN transceiver module is only safe if its digital IO side is explicitly 3.3 V compatible. Many bare CAN transceiver boards expose `VCC`, `GND`, `TXD`, `RXD`, `CANH`, and `CANL`; connect `CANH`/`CANL` only to the bus, never directly to ESP32 GPIO pins.
+
+DroneCAN is a shared two-wire bus. The bus should be one physical trunk with short stubs to each node:
+
+```text
+120 ohm terminator                                             120 ohm terminator
+       |                                                              |
+       v                                                              v
+CANH ===+======================+======================+===============+=== CANH
+        |                      |                      |
+        |                      |                      |
+       FC CAN port            ESP32 CAN transceiver   Other DroneCAN node
+        |                      |                      |
+CANL ===+======================+======================+===============+=== CANL
+```
+
+Termination rules:
+
+- Install exactly two 120 ohm terminators, one at each physical end of the CANH/CANL trunk.
+- Do not add a third terminator on the ESP module if the flight controller and another end-of-bus device already provide termination.
+- If the ESP transceiver is physically at one end of the bus, enable or install one 120 ohm terminator at the ESP end and one at the opposite end.
+- With power off, a correctly terminated bus normally measures about 60 ohm between `CANH` and `CANL` because the two 120 ohm terminators are in parallel.
+- Keep the ESP transceiver stub short. If possible, place it on the trunk rather than at the end of a long branch.
+
 For Android app testing, use one transport at a time because many receiver apps do not display whether a detected aircraft came from BLE or Wi-Fi.
 
 ### Minimum configuration checklist
@@ -723,6 +808,121 @@ The first flash writes the firmware to `ota_0`. Subsequent OTA updates alternate
 ### BLE schedule with authentication
 
 When authentication is enabled the BLE schedule extends from 8 to 12 slots (3 seconds per full cycle at 250 ms per slot). Auth pages 0–3 are appended after the base message rotation. The Location and System messages are refreshed immediately before signing so auth pages always cover the most recent state.
+
+## Web Configurator (Cloudbuild)
+
+A web-based firmware configurator allows users to configure and build the firmware without installing the ESP-IDF toolchain. The user fills in a form (UAS ID, operator ID, transports, position, etc.), and the backend generates a `sdkconfig` overlay, triggers a GitHub Actions build, and returns a ready-to-flash firmware ZIP.
+
+Because the repository is public, GitHub Actions build minutes are free and unlimited.
+
+### Architecture
+
+```
+Browser (web form)
+    │  POST /build { uas_id, operator_id, transports, ... }
+    ▼
+Cloudbuild server (.dev/cloudbuild/)
+    │  1. Validate inputs
+    │  2. Render sdkconfig overlay
+    │  3. Base64-encode overlay
+    │  4. Generate correlation UUID (build_id)
+    │  5. POST /actions/workflows/cloudbuild.yml/dispatches
+    │     via GitHub API with { build-id, sdkconfig-overlay-b64 }
+    │  6. Return { build_id }
+    ▼
+Browser polls GET /build/{build_id}/status
+    │
+    ▼
+Cloudbuild server
+    → lists GitHub Actions runs for cloudbuild.yml
+    → matches run by name (run-name: cloudbuild-{build_id})
+    → returns { status, conclusion, download_url? }
+    │
+    ▼ (completed + success)
+Browser GET /build/{build_id}/download
+    → server proxies artifact ZIP from GitHub (token never reaches browser)
+```
+
+The `run-name: cloudbuild-{build_id}` field on the workflow is what ties a dispatch to a specific poll without needing to store server-side state.
+
+### Reusable action
+
+The GitHub Actions build logic is extracted into a reusable workflow at [`.dev/actions/`](.dev/actions/). Publish that directory's contents into the `peinser/actions` repository and tag it `v1`. Any other ESP-IDF project can then use it:
+
+```yaml
+jobs:
+  firmware:
+    uses: peinser/actions/.github/workflows/esp-remoteid-build.yml@v1
+    with:
+      idf-version: release-v5.5
+      target: esp32s3
+    permissions:
+      contents: read
+```
+
+### Self-hosting the configurator backend
+
+The cloudbuild server is a Node.js 22 service at [`.dev/cloudbuild/`](.dev/cloudbuild/). It requires a GitHub fine-grained PAT with `actions: write` and `actions: read` on this repository.
+
+```sh
+cp .dev/cloudbuild/.env.example .dev/cloudbuild/.env
+# Edit .env: set GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO
+docker compose -f .dev/cloudbuild/docker-compose.yml up -d
+```
+
+Point `ALLOWED_ORIGIN` at your web configurator frontend's origin. Put the service behind a reverse proxy (nginx, Caddy) for TLS before exposing it publicly.
+
+For local development without Docker:
+
+```sh
+cd .dev/cloudbuild
+cp .env.example .env   # fill in GITHUB_TOKEN
+npm install
+npm run dev            # runs on http://localhost:3000
+```
+
+### Publishing the reusable action
+
+```sh
+# Copy the contents of .dev/actions/ into the peinser/actions repository, then:
+git tag v1
+git push origin main v1
+```
+
+The cloudbuild.yml workflow in this repository references `peinser/actions/.github/workflows/esp-remoteid-build.yml@v1`. Create and tag that repository before triggering any cloudbuild dispatch.
+
+### API reference
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/healthz` | GET | Health check; returns `{"ok":true}` |
+| `/build` | POST | Submit a build request; returns `{"build_id":"..."}` |
+| `/build/:id/status` | GET | Poll build status; returns `{status, conclusion, run_url, download_url?}` |
+| `/build/:id/download` | GET | Download firmware ZIP (proxied from GitHub) |
+
+**POST /build request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `uas_id` | string | Yes | UAS ID, max 20 characters |
+| `operator_id` | string | Yes | Operator registration ID, max 20 characters |
+| `id_type` | string | Yes | `caa_reg` or `serial` |
+| `ua_type` | string | Yes | `multirotor`, `aeroplane`, `hybrid_lift`, or `other` |
+| `eu_category` | string | Yes | `undeclared`, `open`, `specific`, or `certified` |
+| `eu_class` | string | Yes | `undeclared`, `c0` through `c6` |
+| `transport_ble` | boolean | Yes | Enable BLE 4 legacy advertising |
+| `transport_ble5` | boolean | Yes | Enable BLE 5 Long Range |
+| `transport_wifi_beacon` | boolean | Yes | Enable Wi-Fi Beacon |
+| `transport_wifi_nan` | boolean | Yes | Enable Wi-Fi NAN |
+| `ble_tx_power` | string | No | `n12`, `n9`, `n6`, `n3`, `n0`, `p3`, `p6`, or `p9` |
+| `ble_tx_interval_ms` | number | No | 100-5000 ms, default 250 |
+| `has_position` | boolean | No | Broadcast a known takeoff position |
+| `takeoff_lat_1e6` | number | If `has_position` | Latitude degrees x 10^6 |
+| `takeoff_lon_1e6` | number | If `has_position` | Longitude degrees x 10^6 |
+| `takeoff_alt_m` | number | If `has_position` | Altitude above WGS-84 ellipsoid in metres |
+| `startup_delay_ms` | number | No | 0-60000 ms, defaults to 0 for cloudbuild |
+| `ota_enable` | boolean | No | Include OTA update server |
+| `ota_trigger_gpio` | number | No | GPIO for OTA trigger button (-1 to 48) |
 
 ## TODO
 

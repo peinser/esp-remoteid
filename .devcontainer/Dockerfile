@@ -1,4 +1,4 @@
-FROM harbor.peinser.com/dockerhub/espressif/idf:release-v5.5
+FROM espressif/idf:release-v5.5
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV EDITOR=vim
