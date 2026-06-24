@@ -108,6 +108,33 @@ static void apply_update_locked(const remoteid_store_update_t *update)
         s_state.eu_class                 = update->data.system.eu_class;
         ESP_LOGD(TAG, "updated System from input source");
         break;
+    case REMOTEID_STORE_UPDATE_SELF_ID:
+        s_state.self_id_type = update->data.self_id.desc_type;
+        strlcpy(s_state.self_id_desc, update->data.self_id.desc, sizeof(s_state.self_id_desc));
+        s_state.has_self_id = true;
+        ESP_LOGI(TAG, "updated Self ID from input source (type=%d)", s_state.self_id_type);
+        break;
+    case REMOTEID_STORE_UPDATE_AUTH: {
+        const ODID_Auth_data *page = &update->data.auth.page;
+        if (page->DataPage >= ODID_AUTH_MAX_PAGES) {
+            ESP_LOGW(TAG, "ignored Authentication page %u beyond max %d", page->DataPage, ODID_AUTH_MAX_PAGES);
+            break;
+        }
+        s_state.ext_auth_pages[page->DataPage] = *page;
+        s_state.ext_auth_pages_received |= (uint16_t)(1u << page->DataPage);
+        if (page->DataPage == 0) {
+            s_state.ext_auth_last_page = page->LastPageIndex;
+        }
+        // External auth is broadcastable only once page 0 (which carries
+        // LastPageIndex) and every page up to it have been received.
+        if (s_state.ext_auth_pages_received & 1u) {
+            uint16_t needed = (uint16_t)((1u << (s_state.ext_auth_last_page + 1)) - 1);
+            s_state.has_ext_auth = (s_state.ext_auth_pages_received & needed) == needed;
+        }
+        ESP_LOGD(TAG, "stored Authentication page %u/%u (ready=%d)",
+                 page->DataPage, s_state.ext_auth_last_page, s_state.has_ext_auth);
+        break;
+    }
     case REMOTEID_STORE_UPDATE_TAKEOFF:
         if (s_state.has_position) {
             s_state.has_operator_position   = true;

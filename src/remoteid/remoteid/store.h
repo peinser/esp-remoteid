@@ -11,6 +11,10 @@ typedef enum remoteid_store_update_type {
     REMOTEID_STORE_UPDATE_OPERATOR_ID,
     REMOTEID_STORE_UPDATE_LOCATION,
     REMOTEID_STORE_UPDATE_SYSTEM,
+    REMOTEID_STORE_UPDATE_SELF_ID,
+    // A single received Authentication page. The store accumulates pages and
+    // marks external auth ready once 0..LastPageIndex have all arrived.
+    REMOTEID_STORE_UPDATE_AUTH,
     // Snapshot the current location into the System operator position fields.
     // Carries no payload; the store reads from its own location state atomically.
     REMOTEID_STORE_UPDATE_TAKEOFF,
@@ -27,6 +31,14 @@ typedef struct remoteid_store_update {
         struct {
             char operator_id[ODID_ID_SIZE + 1];
         } operator_id;
+        struct {
+            ODID_desctype_t desc_type;
+            char desc[ODID_STR_SIZE + 1];
+        } self_id;
+        struct {
+            // One decoded Authentication page as received from the input link.
+            ODID_Auth_data page;
+        } auth;
         struct {
             bool has_position;
             double latitude;

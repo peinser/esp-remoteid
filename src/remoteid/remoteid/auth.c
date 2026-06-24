@@ -1,18 +1,61 @@
 #include "auth.h"
 
-#include "sdkconfig.h"
-
-#if CONFIG_REMOTEID_AUTH_ED25519
-
 #include <string.h>
 
 #include "esp_log.h"
+#include "opendroneid.h"
+#include "sdkconfig.h"
+
+static const char *TAG = "remoteid_auth";
+
+// ---- External (input-link) authentication ----------------------------------
+// These do not require the signing key and are compiled in regardless of whether
+// local Ed25519 signing is enabled.
+
+int remoteid_auth_apply_external_bundle(remoteid_message_bundle_t *bundle, const remoteid_state_t *state)
+{
+    if (!state->has_ext_auth) {
+        return -1;
+    }
+
+    int last_page = state->ext_auth_last_page < ODID_AUTH_MAX_PAGES
+                    ? state->ext_auth_last_page : ODID_AUTH_MAX_PAGES - 1;
+
+    for (int page = 0; page <= last_page; page++) {
+        ODID_Auth_encoded encoded;
+        if (encodeAuthMessage(&encoded, &state->ext_auth_pages[page]) != ODID_SUCCESS) {
+            ESP_LOGE(TAG, "failed to encode external auth page %d", page);
+            return -1;
+        }
+        memcpy(bundle->auth_pages[page], &encoded, ODID_MESSAGE_SIZE);
+    }
+
+    return last_page;
+}
+
+bool remoteid_auth_apply_external_uas_data(ODID_UAS_Data *uas_data, const remoteid_state_t *state)
+{
+    if (!state->has_ext_auth) {
+        return false;
+    }
+
+    int last_page = state->ext_auth_last_page < ODID_AUTH_MAX_PAGES
+                    ? state->ext_auth_last_page : ODID_AUTH_MAX_PAGES - 1;
+
+    for (int page = 0; page <= last_page; page++) {
+        uas_data->Auth[page]     = state->ext_auth_pages[page];
+        uas_data->AuthValid[page] = 1;
+    }
+
+    return true;
+}
+
+#if CONFIG_REMOTEID_AUTH_ED25519
+
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
 #include "monocypher-ed25519.h"
 #include "nvs.h"
-
-static const char *TAG = "remoteid_auth";
 
 // Fixed 16-byte header for PKCS#8 Ed25519 DER (RFC 8410).
 // Followed immediately by the 32-byte private key seed.
@@ -188,7 +231,7 @@ esp_err_t remoteid_auth_init(void)
     return ESP_OK;
 }
 
-void remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle)
+int remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle)
 {
     uint8_t message_set[REMOTEID_MESSAGE_COUNT * ODID_MESSAGE_SIZE];
 
@@ -206,10 +249,12 @@ void remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle)
         ODID_Auth_encoded encoded;
         if (encodeAuthMessage(&encoded, &auth_data[page]) != ODID_SUCCESS) {
             ESP_LOGE(TAG, "failed to encode auth page %d", page);
-            return;
+            return -1;
         }
         memcpy(bundle->auth_pages[page], &encoded, ODID_MESSAGE_SIZE);
     }
+
+    return last_page;
 }
 
 void remoteid_auth_sign_uas_data(ODID_UAS_Data *uas_data)
@@ -218,20 +263,25 @@ void remoteid_auth_sign_uas_data(ODID_UAS_Data *uas_data)
     ODID_Location_encoded   location;
     ODID_System_encoded     system;
     ODID_OperatorID_encoded operator_id;
+    ODID_SelfID_encoded     self_id;
 
     if (encodeBasicIDMessage(&basic_id,       &uas_data->BasicID[0])   != ODID_SUCCESS ||
         encodeLocationMessage(&location,      &uas_data->Location)     != ODID_SUCCESS ||
         encodeSystemMessage(&system,          &uas_data->System)       != ODID_SUCCESS ||
-        encodeOperatorIDMessage(&operator_id, &uas_data->OperatorID)   != ODID_SUCCESS) {
+        encodeOperatorIDMessage(&operator_id, &uas_data->OperatorID)   != ODID_SUCCESS ||
+        encodeSelfIDMessage(&self_id,         &uas_data->SelfID)       != ODID_SUCCESS) {
         ESP_LOGE(TAG, "message encoding failed during auth signing, skipping auth pages");
         return;
     }
 
+    // Order must match remoteid_encode_static_messages / the bundle layout so a
+    // verifier reconstructs the same signed set across BLE and Wi-Fi transports.
     uint8_t message_set[REMOTEID_MESSAGE_COUNT * ODID_MESSAGE_SIZE];
-    memcpy(message_set + 0 * ODID_MESSAGE_SIZE, &basic_id,    ODID_MESSAGE_SIZE);
-    memcpy(message_set + 1 * ODID_MESSAGE_SIZE, &location,    ODID_MESSAGE_SIZE);
-    memcpy(message_set + 2 * ODID_MESSAGE_SIZE, &system,      ODID_MESSAGE_SIZE);
-    memcpy(message_set + 3 * ODID_MESSAGE_SIZE, &operator_id, ODID_MESSAGE_SIZE);
+    memcpy(message_set + REMOTEID_MESSAGE_BASIC_ID    * ODID_MESSAGE_SIZE, &basic_id,    ODID_MESSAGE_SIZE);
+    memcpy(message_set + REMOTEID_MESSAGE_LOCATION    * ODID_MESSAGE_SIZE, &location,    ODID_MESSAGE_SIZE);
+    memcpy(message_set + REMOTEID_MESSAGE_SYSTEM      * ODID_MESSAGE_SIZE, &system,      ODID_MESSAGE_SIZE);
+    memcpy(message_set + REMOTEID_MESSAGE_OPERATOR_ID * ODID_MESSAGE_SIZE, &operator_id, ODID_MESSAGE_SIZE);
+    memcpy(message_set + REMOTEID_MESSAGE_SELF_ID     * ODID_MESSAGE_SIZE, &self_id,     ODID_MESSAGE_SIZE);
 
     uint8_t signature[64];
     crypto_ed25519_sign(signature, s_private_key, message_set, sizeof(message_set));
@@ -246,7 +296,7 @@ void remoteid_auth_sign_uas_data(ODID_UAS_Data *uas_data)
 #else // !CONFIG_REMOTEID_AUTH_ED25519
 
 esp_err_t remoteid_auth_init(void) { return ESP_OK; }
-void remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle) { (void)bundle; }
+int remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle) { (void)bundle; return -1; }
 void remoteid_auth_sign_uas_data(ODID_UAS_Data *uas_data) { (void)uas_data; }
 
 #endif

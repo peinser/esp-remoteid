@@ -184,27 +184,80 @@ MAVLink input is available but disabled by default. When enabled, the firmware l
 - `OPEN_DRONE_ID_BASIC_ID`
 - `OPEN_DRONE_ID_OPERATOR_ID`
 - `OPEN_DRONE_ID_LOCATION`
+- `OPEN_DRONE_ID_SYSTEM`
+- `OPEN_DRONE_ID_SELF_ID`
+- `OPEN_DRONE_ID_AUTHENTICATION`
+- `OPEN_DRONE_ID_MESSAGE_PACK`
+
+It also watches `HEARTBEAT` to capture the takeoff position when an autopilot first arms.
+
+`OPEN_DRONE_ID_MESSAGE_PACK` is unpacked and each contained OpenDroneID message is applied as if it had arrived on its own, so a flight controller can deliver the full set in a single frame. Authentication pages received over the link are reassembled and broadcast verbatim, superseding any locally generated Ed25519 signature. Both transports carry all authentication pages; the BLE advertising schedule reserves a slot per page and skips any that are unpopulated without holding an empty advertising interval.
 
 Incoming Basic ID and Operator ID updates feed the same readiness gate as Kconfig values. This allows a flight controller or companion computer to provide identity at runtime while keeping the placeholder Kconfig values in flash. Broadcasts still do not start until a valid Basic ID/UAS ID and Operator ID are present.
 
+#### Making the flight controller emit OpenDroneID
+
+Flight controllers do not send the `OPEN_DRONE_ID_*` messages by default; OpenDroneID has to be enabled and, on some firmware, compiled in.
+
+**ArduPilot.** Set `DID_ENABLE = 1` and reboot. The OpenDroneID feature must be present in the firmware: many boards ship without it to save flash, so you may need a build with the "OpenDroneID" feature selected (via the [custom firmware build server](https://custom.ardupilot.org/)). Related parameters:
+
+| Parameter | Purpose |
+|-----------|---------|
+| `DID_ENABLE` | Master enable for OpenDroneID. |
+| `DID_MAVPORT` | Serial port index that carries the OpenDroneID MAVLink stream to this module (`-1` for none). |
+| `DID_CANDRIVER` | DroneCAN driver index, if the module is on CAN instead of serial. |
+| `DID_OPTIONS` | Bitmask; among other things it can require a healthy Remote ID module before arming (see arm gating below). |
+| `DID_RATE_HZ` | Rate at which the dynamic messages (Location/System) are sent. |
+
+With `DID_ENABLE=1`, ArduPilot sends Basic ID, Location, System, Operator ID, Self ID, and (when configured) Authentication, usually bundled in `OPEN_DRONE_ID_MESSAGE_PACK`. It also expects the module to talk back; see the status output section.
+
+**PX4.** Build with the `remote_id` module included and enable it with `UXRCE`-independent parameter `RID_ENABLE = 1` (PX4's OpenDroneID driver). PX4 streams the same `OPEN_DRONE_ID_*` MAVLink messages on the configured MAVLink instance; ensure the serial port's MAVLink mode forwards the OpenDroneID stream. PX4 support is less mature than ArduPilot's and may require a recent main build; consult the PX4 OpenDroneID docs for your version.
+
+Either way, this module consumes the standard messages once they are flowing; no module-side change is needed to switch between ArduPilot and PX4 sources.
+
 | Option | Default | Description |
 |--------|---------|-------------|
-| `Enable MAVLink OpenDroneID UART input` | Disabled | Enables the UART MAVLink parser and state producer. |
-| `MAVLink UART number` | `1` | ESP32-S3 UART peripheral used for input. This does not imply physical pins. |
+| `Enable MAVLink OpenDroneID UART input` | Disabled | Enables the MAVLink parser and state producer. |
+| `MAVLink transport` | `UART` | Physical link: `UART`, or `USB Serial/JTAG` (native USB device) for a companion computer. |
+| `MAVLink UART number` | `1` | ESP32-S3 UART peripheral used for input (UART transport only). This does not imply physical pins. |
 | `MAVLink UART baud rate` | `57600` | UART baud rate. Common values are `57600`, `115200`, and `921600`. |
 | `MAVLink UART RX GPIO` | `-1` | Physical ESP32-S3 pin routed to the selected UART RX signal. Connect this to the flight controller MAVLink TX pin. Must be configured when MAVLink input is enabled. |
 | `MAVLink UART TX GPIO` | `-1` | Optional physical ESP32-S3 pin routed to the selected UART TX signal. Connect this to the flight controller MAVLink RX pin only for bidirectional wiring. Leave as `-1` for receive-only. |
 | `Accepted MAVLink target system` | `0` | `0` accepts all systems; non-zero accepts that system or broadcast target `0`. |
 | `Accepted MAVLink target component` | `0` | `0` accepts all components; non-zero accepts that component or broadcast target `0`. |
+| `Send HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS` | Disabled | Enables status output back to the flight controller. Requires the TX GPIO. |
+| `Outgoing MAVLink system ID` | `0` | System ID for outgoing messages. `0` adopts the flight controller's system ID from its HEARTBEAT (uses `1` until one is seen). |
+| `Outgoing MAVLink component ID` | `236` | Component ID for outgoing messages. `236`-`238` are the Open Drone ID transmitter component IDs. |
+| `Status output rate (Hz)` | `1` | HEARTBEAT and ARM_STATUS transmit rate. |
 
-On ESP32-S3, the UART number selects the hardware UART block (`UART0`, `UART1`, or `UART2`). It does not uniquely select board pins. UART signals are routed through the ESP32 GPIO matrix, and many dev boards label only the programming/debug serial pins as `RX`/`TX`. Choose GPIOs that are exposed on your board and not already used by USB serial, flash/PSRAM, buttons, LEDs, or strapping functions.
+#### Status output and arm gating
 
-Receive-only wiring is enough for the current MAVLink producer:
+When `Send HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS` is enabled, the module periodically transmits two messages back to the flight controller (this requires bidirectional UART wiring, i.e. the TX GPIO connected to the flight controller's RX):
+
+- `HEARTBEAT` with component type `MAV_TYPE_ODID`, so the flight controller and ground station see the Remote ID module as a live component of the vehicle.
+- `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` once a usable identity is present and broadcasts have started, or `PRE_ARM_FAIL_GENERIC` with an error string otherwise.
+
+This is what lets ArduPilot treat the module as present and healthy. With the relevant `DID_OPTIONS` bit set, ArduPilot refuses to arm until it receives `GOOD_TO_ARM`, so the drone cannot take off without a working Remote ID broadcast. The module shares the flight controller's system ID (adopted automatically by default) and uses an Open Drone ID component ID, so the status appears as part of the same vehicle.
+
+#### Transport: UART or USB
+
+The MAVLink link can run over a hardware UART or over the ESP32-S3 native USB port.
+
+**UART** is the default and is the right choice when wiring directly to a flight-controller serial port (`DID_MAVPORT`). On ESP32-S3 the UART number selects the hardware UART block (`UART0`, `UART1`, or `UART2`); it does not uniquely select board pins. UART signals are routed through the ESP32 GPIO matrix, and many dev boards label only the programming/debug serial pins as `RX`/`TX`. Choose GPIOs that are exposed on your board and not already used by USB serial, flash/PSRAM, buttons, LEDs, or strapping functions. Receive-only wiring is enough unless status output is enabled:
 
 ```text
 Flight controller TX  ->  ESP32-S3 MAVLink UART RX GPIO
 Flight controller GND ->  ESP32-S3 GND
+(status output also needs:  Flight controller RX <- ESP32-S3 MAVLink UART TX GPIO)
 ```
+
+**USB Serial/JTAG** uses the ESP32-S3 built-in USB Serial/JTAG controller on the native USB port (GPIO19/20) as a USB CDC device, so no GPIO wiring is needed and the same single connection carries both directions (including status output). The peer must be a **USB host** - a companion computer or SBC - which sees the module as a serial device (for example `/dev/ttyACM0`) that can be fed to `mavlink-router`, MAVProxy, or any MAVLink endpoint. It does not connect directly to a flight controller's USB port, because that port is itself a USB device.
+
+The ESP32-S3 has a single native USB interface. A dev board's second "USB" port is usually a USB-to-UART bridge that is electrically just `UART0`.
+
+The native port is shared with logging, so this project disables the **secondary console** by default (`CONFIG_ESP_CONSOLE_SECONDARY_NONE=y` in `sdkconfig.defaults`); logs go to the primary `UART0` console instead. This keeps the native USB port free for the MAVLink transport, so no extra configuration is needed - the USB transport works out of the box. If the secondary console is re-enabled on USB Serial/JTAG while this transport is selected, log text would corrupt the MAVLink stream, so the build fails with an explanatory error.
+
+To send logs over the native USB port instead (only when you are *not* using USB for MAVLink), re-enable a USB console with `idf.py menuconfig` -> **Component config -> ESP System Settings -> Channel for console secondary output -> USB Serial/JTAG Controller** (or set the primary console to it under **Channel for console output**).
 
 ### DroneCAN Input
 
