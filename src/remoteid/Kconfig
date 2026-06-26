@@ -183,18 +183,20 @@ config REMOTEID_MAVLINK_STATUS_OUTPUT
         healthy, and (depending on DID_OPTIONS) can refuse to arm without them.
         Requires the MAVLink UART TX GPIO above to be set.
 
-if REMOTEID_MAVLINK_STATUS_OUTPUT
+# Outgoing identity is shared by every MAVLink producer (status output and the
+# operator-location loop), so it is available whenever either is enabled.
+if REMOTEID_MAVLINK_STATUS_OUTPUT || REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
 
 config REMOTEID_MAVLINK_OWN_SYSTEM_ID
     int "Outgoing MAVLink system ID"
     default 0
     range 0 255
     help
-        MAVLink system ID used for HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS sent by
-        this module. A Remote ID transmitter should share the flight
-        controller's system ID. Leave at 0 to adopt the system ID seen in the
-        flight controller's HEARTBEAT automatically (system ID 1 is used until
-        one is observed).
+        MAVLink system ID used for messages this module sends (HEARTBEAT,
+        OPEN_DRONE_ID_ARM_STATUS, OPEN_DRONE_ID_SYSTEM_UPDATE). A Remote ID
+        transmitter should share the flight controller's system ID. Leave at 0 to
+        adopt the system ID seen in the flight controller's HEARTBEAT
+        automatically (system ID 1 is used until one is observed).
 
 config REMOTEID_MAVLINK_OWN_COMPONENT_ID
     int "Outgoing MAVLink component ID"
@@ -206,6 +208,10 @@ config REMOTEID_MAVLINK_OWN_COMPONENT_ID
         (MAV_COMP_ID_ODID_TXRX_1..3). Use a distinct value per module if several
         share one system ID.
 
+endif # outgoing identity
+
+if REMOTEID_MAVLINK_STATUS_OUTPUT
+
 config REMOTEID_MAVLINK_STATUS_RATE_HZ
     int "Status output rate (Hz)"
     default 1
@@ -216,6 +222,40 @@ config REMOTEID_MAVLINK_STATUS_RATE_HZ
         ArduPilot's arm gating.
 
 endif # REMOTEID_MAVLINK_STATUS_OUTPUT
+
+config REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
+    bool "Own the operator-location freshness loop (SYSTEM_UPDATE)"
+    default n
+    help
+        Keep the OpenDroneID operator location fresh on the aircraft without the
+        GCS staying connected. For a fixed operator location (FIXED/TAKEOFF) the
+        firmware periodically transmits OPEN_DRONE_ID_SYSTEM_UPDATE (broadcast
+        target 0/0) to the autopilot. For a live (LIVE_GNSS) operator location it
+        only consumes the GCS stream and expires it when updates stop. The send
+        timestamp is seeded from MAVLink SYSTEM_TIME. Requires an outbound MAVLink
+        path: the TX GPIO on the UART transport, or USB Serial/JTAG (inherent).
+        Operator-location status is reported via ARM_STATUS only when status
+        output is also enabled.
+
+if REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
+
+config REMOTEID_MAVLINK_OPERATOR_LOCATION_PERIOD_MS
+    int "Fixed operator-location republish period (ms)"
+    default 2000
+    range 200 10000
+    help
+        Interval between OPEN_DRONE_ID_SYSTEM_UPDATE transmissions when a fixed
+        operator location is active. 2000 ms (0.5 Hz) mirrors a typical GCS.
+
+config REMOTEID_MAVLINK_OPERATOR_LOCATION_EXPIRY_MS
+    int "Live operator-location expiry (ms)"
+    default 5000
+    range 1000 60000
+    help
+        For a live (LIVE_GNSS) operator location, drop it as stale if no
+        SYSTEM/SYSTEM_UPDATE refresh arrives within this window.
+
+endif # REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
 
 endif # REMOTEID_MAVLINK_INPUT
 

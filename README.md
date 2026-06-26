@@ -229,6 +229,9 @@ Either way, this module consumes the standard messages once they are flowing; no
 | `Outgoing MAVLink system ID` | `0` | System ID for outgoing messages. `0` adopts the flight controller's system ID from its HEARTBEAT (uses `1` until one is seen). |
 | `Outgoing MAVLink component ID` | `236` | Component ID for outgoing messages. `236`-`238` are the Open Drone ID transmitter component IDs. |
 | `Status output rate (Hz)` | `1` | HEARTBEAT and ARM_STATUS transmit rate. |
+| `Own the operator-location freshness loop` | Disabled | Aircraft-local operator-location ownership (see below). Requires the TX GPIO. |
+| `Fixed operator-location republish period (ms)` | `2000` | SYSTEM_UPDATE cadence for a fixed operator location (0.5 Hz). |
+| `Live operator-location expiry (ms)` | `5000` | Drop a live operator location if no GCS refresh arrives within this window. |
 
 #### Status output and arm gating
 
@@ -238,6 +241,21 @@ When `Send HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS` is enabled, the module period
 - `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` once a usable identity is present and broadcasts have started, or `PRE_ARM_FAIL_GENERIC` with an error string otherwise.
 
 This is what lets ArduPilot treat the module as present and healthy. With the relevant `DID_OPTIONS` bit set, ArduPilot refuses to arm until it receives `GOOD_TO_ARM`, so the drone cannot take off without a working Remote ID broadcast. The module shares the flight controller's system ID (adopted automatically by default) and uses an Open Drone ID component ID, so the status appears as part of the same vehicle.
+
+#### Operator-location freshness loop
+
+OpenDroneID requires the operator location to be refreshed continuously (the autopilot treats a stale operator location as a pre-arm failure). A ground station can do this by streaming `OPEN_DRONE_ID_SYSTEM_UPDATE` at ~1 Hz, but that ties compliance to the GCS staying connected. With `Own the operator-location freshness loop` enabled, the firmware keeps the operator location fresh **on the aircraft**, so the UAS location stays autopilot-owned while the operator location becomes aircraft-local.
+
+The mode is derived from the `operator_location_type` carried in the last full `OPEN_DRONE_ID_SYSTEM` message:
+
+| Operator-location type | Firmware behaviour |
+|------------------------|--------------------|
+| `FIXED` / `TAKEOFF` | The firmware **republishes** `OPEN_DRONE_ID_SYSTEM_UPDATE` (broadcast `target=0/0`) at the configured period (0.5 Hz default), with the fixed position and a fresh timestamp, so the autopilot stays compliant even after the GCS disconnects. |
+| `LIVE_GNSS` | The firmware **only consumes** the GCS's live `SYSTEM_UPDATE` stream and **never republishes** it (re-stamping a moving position would falsify freshness). If updates stop for longer than the expiry window, the operator location is dropped as stale. |
+
+When stale or absent, the operator location is reported via `ARM_STATUS` (`PRE_ARM_FAIL_GENERIC`, "Operator location missing or stale") — this requires status output to also be enabled — and operator position is dropped from the BLE/Wi-Fi broadcast.
+
+The republish timestamp (a Unix-2019 epoch) is seeded from the autopilot's `SYSTEM_TIME` message; until a valid `SYSTEM_TIME` has been seen, the loop holds off transmitting. The feature requires an outbound MAVLink path (the TX GPIO on the UART transport; inherent on USB Serial/JTAG) and is only available when MAVLink input is enabled.
 
 #### Transport: UART or USB
 

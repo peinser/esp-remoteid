@@ -71,6 +71,9 @@ typedef struct remoteid_state {
     ODID_classification_type_t classification_type;
     ODID_category_EU_t eu_category;
     ODID_class_EU_t eu_class;
+    // esp_timer milliseconds when the operator position was last refreshed; used
+    // to expire a live (LIVE_GNSS) operator location when GCS updates stop.
+    uint32_t operator_position_updated_ms;
 
     // Self ID
     bool has_self_id;

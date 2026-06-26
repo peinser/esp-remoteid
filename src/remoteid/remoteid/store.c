@@ -4,6 +4,7 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -106,7 +107,25 @@ static void apply_update_locked(const remoteid_store_update_t *update)
         s_state.classification_type      = update->data.system.classification_type;
         s_state.eu_category              = update->data.system.eu_category;
         s_state.eu_class                 = update->data.system.eu_class;
+        if (s_state.has_operator_position) {
+            s_state.operator_position_updated_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        }
         ESP_LOGD(TAG, "updated System from input source");
+        break;
+    case REMOTEID_STORE_UPDATE_SYSTEM_UPDATE:
+        s_state.has_operator_position    = update->data.system_update.has_operator_position;
+        s_state.operator_latitude        = update->data.system_update.operator_latitude;
+        s_state.operator_longitude       = update->data.system_update.operator_longitude;
+        s_state.operator_altitude_geo_m  = update->data.system_update.operator_altitude_geo_m;
+        if (s_state.has_operator_position) {
+            s_state.operator_position_updated_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        }
+        ESP_LOGD(TAG, "updated operator position from System Update (has_position=%d)",
+                 s_state.has_operator_position);
+        break;
+    case REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE:
+        s_state.has_operator_position = false;
+        ESP_LOGW(TAG, "operator position expired and cleared");
         break;
     case REMOTEID_STORE_UPDATE_SELF_ID:
         s_state.self_id_type = update->data.self_id.desc_type;
@@ -142,6 +161,7 @@ static void apply_update_locked(const remoteid_store_update_t *update)
             s_state.operator_longitude      = s_state.longitude;
             s_state.operator_altitude_geo_m = s_state.altitude_geo_m;
             s_state.operator_location_type  = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
+            s_state.operator_position_updated_ms = (uint32_t)(esp_timer_get_time() / 1000);
             ESP_LOGI(TAG, "takeoff position set: %.6f, %.6f @ %.1f m",
                      s_state.operator_latitude, s_state.operator_longitude,
                      s_state.operator_altitude_geo_m);

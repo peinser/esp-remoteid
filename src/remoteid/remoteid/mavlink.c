@@ -16,6 +16,7 @@
 #endif
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "store.h"
@@ -24,9 +25,18 @@
 #define REMOTEID_MAVLINK_QUEUE_SIZE    0
 #define REMOTEID_MAVLINK_TASK_PRIORITY 5
 
+// True when the firmware transmits MAVLink back to the autopilot (status output
+// and/or the operator-location loop); both share the TX prerequisite and the
+// outgoing identity/transport helpers below.
+#if CONFIG_REMOTEID_MAVLINK_STATUS_OUTPUT || CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
+#define REMOTEID_MAVLINK_OUTPUT 1
+#else
+#define REMOTEID_MAVLINK_OUTPUT 0
+#endif
+
 static const char *TAG = "remoteid_mavlink";
 
-#if CONFIG_REMOTEID_MAVLINK_STATUS_OUTPUT
+#if REMOTEID_MAVLINK_OUTPUT
 // System ID adopted from the flight controller's HEARTBEAT; 0 until one is seen.
 // Single-byte access is atomic on this target, so no lock is needed.
 static volatile uint8_t s_autopilot_sysid;
@@ -76,9 +86,9 @@ static void submit_heartbeat(const mavlink_message_t *message)
         return;
     }
 
-#if CONFIG_REMOTEID_MAVLINK_STATUS_OUTPUT
-    // Adopt the flight controller's system ID so our status output appears as a
-    // component of the same vehicle.
+#if REMOTEID_MAVLINK_OUTPUT
+    // Adopt the flight controller's system ID so our outgoing messages appear as
+    // a component of the same vehicle.
     s_autopilot_sysid = message->sysid;
 #endif
 
@@ -219,6 +229,29 @@ static void submit_system(const mavlink_message_t *message)
         ESP_LOGD(TAG, "accepted MAVLink System (has_operator_position=%d)", has_operator_position);
     } else {
         ESP_LOGW(TAG, "dropped MAVLink System update: state queue full");
+    }
+}
+
+static void submit_system_update(const mavlink_message_t *message)
+{
+    mavlink_open_drone_id_system_update_t msg = { 0 };
+    mavlink_msg_open_drone_id_system_update_decode(message, &msg);
+
+    if (!target_matches(msg.target_system, msg.target_component)) {
+        ESP_LOGD(TAG, "ignored System Update for target system=%u component=%u", msg.target_system, msg.target_component);
+        return;
+    }
+
+    remoteid_store_update_t update = {
+        .type = REMOTEID_STORE_UPDATE_SYSTEM_UPDATE,
+        .data.system_update.has_operator_position    = msg.operator_latitude != 0 || msg.operator_longitude != 0,
+        .data.system_update.operator_latitude        = (double)msg.operator_latitude  / 10000000.0,
+        .data.system_update.operator_longitude       = (double)msg.operator_longitude / 10000000.0,
+        .data.system_update.operator_altitude_geo_m  = msg.operator_altitude_geo,
+    };
+
+    if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) != ESP_OK) {
+        ESP_LOGW(TAG, "dropped MAVLink System Update: state queue full");
     }
 }
 
@@ -430,6 +463,39 @@ static void handle_message_pack(const mavlink_message_t *message)
     }
 }
 
+#if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
+
+// Unix seconds at 2019-01-01T00:00:00Z, the OPEN_DRONE_ID_SYSTEM_UPDATE epoch.
+#define REMOTEID_ODID_EPOCH_2019 1546300800UL
+
+// Wall clock derived from MAVLink SYSTEM_TIME, expressed as the ODID-2019 second
+// that corresponded to esp_timer t=0. A single 32-bit value keeps reads/writes
+// atomic across the RX and producer tasks. Valid only once s_time_seeded is set.
+static volatile uint32_t s_odid_epoch_at_boot;
+static volatile bool     s_time_seeded;
+
+static void capture_system_time(const mavlink_message_t *message)
+{
+    mavlink_system_time_t msg = { 0 };
+    mavlink_msg_system_time_decode(message, &msg);
+
+    uint32_t unix_sec = (uint32_t)(msg.time_unix_usec / 1000000ULL);
+    if (unix_sec <= REMOTEID_ODID_EPOCH_2019) {
+        return; // autopilot has no valid wall clock yet
+    }
+
+    uint32_t uptime_sec = (uint32_t)(esp_timer_get_time() / 1000000LL);
+    s_odid_epoch_at_boot = (unix_sec - REMOTEID_ODID_EPOCH_2019) - uptime_sec;
+    s_time_seeded = true;
+}
+
+static uint32_t current_odid_timestamp(void)
+{
+    return s_odid_epoch_at_boot + (uint32_t)(esp_timer_get_time() / 1000000LL);
+}
+
+#endif /* CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP */
+
 static void handle_message(const mavlink_message_t *message)
 {
     switch (message->msgid) {
@@ -448,6 +514,14 @@ static void handle_message(const mavlink_message_t *message)
     case MAVLINK_MSG_ID_OPEN_DRONE_ID_SYSTEM:
         submit_system(message);
         break;
+    case MAVLINK_MSG_ID_OPEN_DRONE_ID_SYSTEM_UPDATE:
+        submit_system_update(message);
+        break;
+#if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
+    case MAVLINK_MSG_ID_SYSTEM_TIME:
+        capture_system_time(message);
+        break;
+#endif
     case MAVLINK_MSG_ID_OPEN_DRONE_ID_SELF_ID:
         submit_self_id(message);
         break;
@@ -486,7 +560,7 @@ static int mavlink_transport_read(uint8_t *buf, size_t len, TickType_t ticks)
     return usb_serial_jtag_read_bytes(buf, len, ticks);
 }
 
-#if CONFIG_REMOTEID_MAVLINK_STATUS_OUTPUT
+#if REMOTEID_MAVLINK_OUTPUT
 static void mavlink_transport_write(const uint8_t *buf, size_t len)
 {
     usb_serial_jtag_write_bytes(buf, len, pdMS_TO_TICKS(100));
@@ -528,7 +602,7 @@ static int mavlink_transport_read(uint8_t *buf, size_t len, TickType_t ticks)
     return uart_read_bytes(CONFIG_REMOTEID_MAVLINK_UART_NUM, buf, len, ticks);
 }
 
-#if CONFIG_REMOTEID_MAVLINK_STATUS_OUTPUT
+#if REMOTEID_MAVLINK_OUTPUT
 static void mavlink_transport_write(const uint8_t *buf, size_t len)
 {
     uart_write_bytes(CONFIG_REMOTEID_MAVLINK_UART_NUM, buf, len);
@@ -537,7 +611,7 @@ static void mavlink_transport_write(const uint8_t *buf, size_t len)
 
 #endif /* transport */
 
-#if CONFIG_REMOTEID_MAVLINK_STATUS_OUTPUT
+#if REMOTEID_MAVLINK_OUTPUT
 
 static uint8_t outgoing_system_id(void)
 {
@@ -555,6 +629,10 @@ static void send_mavlink(const mavlink_message_t *message)
     mavlink_transport_write(buf, len);
 }
 
+#endif /* REMOTEID_MAVLINK_OUTPUT */
+
+#if CONFIG_REMOTEID_MAVLINK_STATUS_OUTPUT
+
 // Report HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS to the flight controller. The
 // arm status mirrors the broadcast readiness gate: GOOD_TO_ARM once a usable
 // identity is present (and the transports are broadcasting), otherwise a
@@ -568,7 +646,20 @@ static void remoteid_mavlink_status_task(void *arg)
     while (true) {
         uint8_t sysid = outgoing_system_id();
         bool ready = remoteid_store_is_ready();
+        const char *fail = "Remote ID identity not ready";
         mavlink_message_t msg;
+
+#if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
+        // When the firmware owns operator-location compliance, a missing or
+        // expired operator location must also block arming.
+        if (ready) {
+            remoteid_state_t snap;
+            if (remoteid_store_get_snapshot(&snap) == ESP_OK && !snap.has_operator_position) {
+                ready = false;
+                fail = "Operator location missing or stale";
+            }
+        }
+#endif
 
         mavlink_msg_heartbeat_pack_chan(sysid, compid, MAVLINK_COMM_1, &msg,
                                         MAV_TYPE_ODID, MAV_AUTOPILOT_INVALID, 0, 0,
@@ -581,7 +672,7 @@ static void remoteid_mavlink_status_task(void *arg)
         // zeros, keeping the frame small.
         char arm_error[50] = {0};
         if (!ready) {
-            strlcpy(arm_error, "Remote ID identity not ready", sizeof(arm_error));
+            strlcpy(arm_error, fail, sizeof(arm_error));
         }
         mavlink_msg_open_drone_id_arm_status_pack_chan(
             sysid, compid, MAVLINK_COMM_1, &msg,
@@ -594,6 +685,50 @@ static void remoteid_mavlink_status_task(void *arg)
 }
 
 #endif /* CONFIG_REMOTEID_MAVLINK_STATUS_OUTPUT */
+
+#if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
+
+// Keep the operator location compliant locally: republish a fixed operator
+// location toward the autopilot at a steady cadence (so it survives the GCS
+// disconnecting), and expire a live operator location when its GCS stream stops.
+static void remoteid_mavlink_operator_location_task(void *arg)
+{
+    (void)arg;
+    const TickType_t period = pdMS_TO_TICKS(CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_PERIOD_MS);
+    const uint8_t    compid = (uint8_t)CONFIG_REMOTEID_MAVLINK_OWN_COMPONENT_ID;
+
+    while (true) {
+        remoteid_state_t snap;
+        if (remoteid_store_get_snapshot(&snap) == ESP_OK && snap.has_operator_position) {
+            if (snap.operator_location_type == ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS) {
+                // Live location is GCS-owned; never republish, only expire it.
+                uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                uint32_t age_ms = now_ms - snap.operator_position_updated_ms;
+                if (age_ms > CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_EXPIRY_MS) {
+                    remoteid_store_update_t expire = { .type = REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE };
+                    if (remoteid_store_submit(&expire, pdMS_TO_TICKS(100)) == ESP_OK) {
+                        ESP_LOGW(TAG, "live operator location stale (%u ms), expiring", (unsigned)age_ms);
+                    }
+                }
+            } else if (s_time_seeded) {
+                // Fixed/takeoff location: keep it fresh toward the autopilot.
+                int32_t lat = (int32_t)(snap.operator_latitude  * 1e7);
+                int32_t lon = (int32_t)(snap.operator_longitude * 1e7);
+                mavlink_message_t msg;
+                mavlink_msg_open_drone_id_system_update_pack_chan(
+                    outgoing_system_id(), compid, MAVLINK_COMM_1, &msg,
+                    0, 0, lat, lon, snap.operator_altitude_geo_m, current_odid_timestamp());
+                send_mavlink(&msg);
+                ESP_LOGD(TAG, "republished fixed operator location via System Update");
+            } else {
+                ESP_LOGD(TAG, "operator-location loop waiting for SYSTEM_TIME seed");
+            }
+        }
+        vTaskDelay(period);
+    }
+}
+
+#endif /* CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP */
 
 static void remoteid_mavlink_task(void *arg)
 {
@@ -617,9 +752,9 @@ static void remoteid_mavlink_task(void *arg)
 
 esp_err_t remoteid_mavlink_start(void)
 {
-#if CONFIG_REMOTEID_MAVLINK_STATUS_OUTPUT && CONFIG_REMOTEID_MAVLINK_TRANSPORT_UART
+#if REMOTEID_MAVLINK_OUTPUT && CONFIG_REMOTEID_MAVLINK_TRANSPORT_UART
     ESP_RETURN_ON_FALSE(CONFIG_REMOTEID_MAVLINK_TX_GPIO >= 0, ESP_ERR_INVALID_ARG, TAG,
-                        "MAVLink TX GPIO must be configured for UART status output");
+                        "MAVLink TX GPIO must be configured for MAVLink output (status / operator-location)");
 #endif
 
     ESP_RETURN_ON_ERROR(mavlink_transport_init(), TAG, "initialize MAVLink transport");
@@ -640,6 +775,17 @@ esp_err_t remoteid_mavlink_start(void)
     }
     ESP_LOGI(TAG, "MAVLink status output enabled (HEARTBEAT + ARM_STATUS) at %d Hz on component %d",
              CONFIG_REMOTEID_MAVLINK_STATUS_RATE_HZ, CONFIG_REMOTEID_MAVLINK_OWN_COMPONENT_ID);
+#endif
+
+#if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
+    if (xTaskCreate(remoteid_mavlink_operator_location_task, "remoteid_mav_oploc", 4096,
+                    NULL, REMOTEID_MAVLINK_TASK_PRIORITY, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "failed to create MAVLink operator-location loop task");
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "MAVLink operator-location loop enabled (%d ms republish, %d ms expiry)",
+             CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_PERIOD_MS,
+             CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_EXPIRY_MS);
 #endif
 
     return ESP_OK;
