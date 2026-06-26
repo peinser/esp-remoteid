@@ -277,6 +277,26 @@ The native port is shared with logging, so this project disables the **secondary
 
 To send logs over the native USB port instead (only when you are *not* using USB for MAVLink), re-enable a USB console with `idf.py menuconfig` -> **Component config -> ESP System Settings -> Channel for console secondary output -> USB Serial/JTAG Controller** (or set the primary console to it under **Channel for console output**).
 
+#### Recommended: filter the MAVLink stream in front of the ESP
+
+The ESP only needs a small set of message IDs, and its serial/USB receive buffer is modest. Feeding it the full vehicle telemetry stream wastes link bandwidth and can overflow the receive buffer under load, which corrupts and intermittently drops OpenDroneID frames (for example, a stale broadcast position even though the source is sending fresh `LOCATION`). **Put a MAVLink filter in front of the ESP** so only the messages it consumes are forwarded to it.
+
+With [mavlink-router](https://github.com/mavlink-router/mavlink-router), filter the endpoint's **egress** (messages sent *to* the ESP) with `AllowMsgIdOut`. Note the direction: `AllowMsgIdOut` limits what the router sends to the ESP, while `AllowMsgIdIn` limits what the ESP is allowed to inject back into the mesh — only `AllowMsgIdOut` reduces the ESP's inbound load.
+
+```ini
+[TcpEndpoint opendroneid]
+Address = 10.0.40.3
+Port = 54321
+# Messages forwarded TO the ESP. HEARTBEAT (0) for takeoff capture / system-ID
+# adoption; SYSTEM_TIME (2) seeds the operator-location loop timestamp; the rest
+# are the OpenDroneID inputs and the message pack.
+AllowMsgIdOut = 0,2,12900,12901,12902,12903,12904,12905,12915,12919
+# Messages the ESP may send back: its HEARTBEAT and ARM_STATUS.
+AllowMsgIdIn = 0,12918
+```
+
+Message IDs: `0` HEARTBEAT, `2` SYSTEM_TIME, `12900` BASIC_ID, `12901` LOCATION, `12902` AUTHENTICATION, `12903` SELF_ID, `12904` SYSTEM, `12905` OPERATOR_ID, `12915` MESSAGE_PACK, `12918` ARM_STATUS (ESP output), `12919` SYSTEM_UPDATE. Drop `2` and `12919` if the operator-location loop is not used, and drop `0` only if you do not need takeoff-position capture or system-ID adoption.
+
 ### DroneCAN Input
 
 DroneCAN input development has started and is disabled by default. This targets the DroneCAN protocol used by ArduPilot and PX4 DroneCAN peripherals and flight-controller buses. DroneCAN is the maintained UAVCAN v0-derived protocol; it is distinct from OpenCyphal/UAVCAN v1. The current milestone brings up the ESP32-S3 TWAI/CAN controller, receives DroneCAN extended CAN frames, reassembles supported multi-frame transfers, and decodes `uavcan.equipment.gnss.Fix2` plus a project-specific Remote ID identity message into the Remote ID state.
