@@ -41,7 +41,7 @@ jobs:
     timeout-minutes: 30
 
     container:
-      image: docker.io/espressif/idf:release-v5.5
+      image: harbor.peinser.com/dockerhub/espressif/idf:release-v5.5
       env:
         IDF_CCACHE_ENABLE: "1"
         CCACHE_DIR: /github/home/.ccache
