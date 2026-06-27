@@ -231,7 +231,7 @@ Either way, this module consumes the standard messages once they are flowing; no
 | `Status output rate (Hz)` | `1` | HEARTBEAT and ARM_STATUS transmit rate. |
 | `Own the operator-location freshness loop` | Disabled | Aircraft-local operator-location ownership (see below). Requires the TX GPIO. |
 | `Fixed operator-location republish period (ms)` | `2000` | SYSTEM_UPDATE cadence for a fixed operator location (0.5 Hz). |
-| `Live operator-location expiry (ms)` | `5000` | Drop a live operator location if no GCS refresh arrives within this window. |
+| `Live operator-location expiry (ms)` | `10000` | Drop a live operator location if no GCS refresh arrives within this window. |
 
 #### Status output and arm gating
 

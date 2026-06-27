@@ -249,7 +249,7 @@ config REMOTEID_MAVLINK_OPERATOR_LOCATION_PERIOD_MS
 
 config REMOTEID_MAVLINK_OPERATOR_LOCATION_EXPIRY_MS
     int "Live operator-location expiry (ms)"
-    default 5000
+    default 10000
     range 1000 60000
     help
         For a live (LIVE_GNSS) operator location, drop it as stale if no
