@@ -41,8 +41,8 @@ python remoteid_test.py --device /dev/cu.usbmodem1101 drive --operator live
 # Deliver identity via OPEN_DRONE_ID_MESSAGE_PACK (unpacked by the firmware).
 python remoteid_test.py --device /dev/cu.usbmodem1101 pack
 
-# Identity + AUTHENTICATION pages.
-python remoteid_test.py --device /dev/cu.usbmodem1101 auth --auth-pages 3
+# Identity + AUTHENTICATION (a 64-byte signature split across pages).
+python remoteid_test.py --device /dev/cu.usbmodem1101 auth --auth-length 64
 
 # Watch the firmware's outbound HEARTBEAT / ARM_STATUS / SYSTEM_UPDATE only.
 python remoteid_test.py --device /dev/cu.usbmodem1101 monitor

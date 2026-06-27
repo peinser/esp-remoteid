@@ -250,19 +250,23 @@ class Driver:
             mavlink.MAV_ODID_SPEED_ACC_3_METERS_PER_SECOND,
             hour_timestamp_now(), mavlink.MAV_ODID_TIME_ACC_1_0_SECOND)
 
-    def authentication(self, pages=2):
-        sig = bytes((i * 7) & 0xFF for i in range(64))   # dummy 64-byte signature
-        last = pages - 1
-        for page in range(pages):
+    def authentication(self, length=64):
+        # Split a dummy signature of `length` bytes across the correct number of
+        # pages: page 0 carries 17 bytes, each later page 23. `length` and
+        # `last_page_index` must agree or receivers reject the auth as incomplete.
+        sig = bytes((i * 7) & 0xFF for i in range(length))
+        extra = 0 if length <= 17 else -(-(length - 17) // 23)   # ceil division
+        last = extra
+        ts = int(time.time()) - ODID_EPOCH_2019
+        for page in range(last + 1):
             if page == 0:
-                data = sig[:17].ljust(23, b"\x00")
+                data = _bytes(sig[:17], 23)
                 self.conn.mav.open_drone_id_authentication_send(
                     self.a.target_system, self.a.target_component, self.id_or_mac,
-                    mavlink.MAV_ODID_AUTH_TYPE_UAS_ID_SIGNATURE, 0, last, 64,
-                    int(time.time()) - ODID_EPOCH_2019, data)
+                    mavlink.MAV_ODID_AUTH_TYPE_UAS_ID_SIGNATURE, 0, last, length, ts, data)
             else:
                 off = 17 + (page - 1) * 23
-                data = sig[off:off + 23].ljust(23, b"\x00")
+                data = _bytes(sig[off:off + 23], 23)
                 self.conn.mav.open_drone_id_authentication_send(
                     self.a.target_system, self.a.target_component, self.id_or_mac,
                     mavlink.MAV_ODID_AUTH_TYPE_UAS_ID_SIGNATURE, page, 0, 0, 0, data)
@@ -367,7 +371,7 @@ def scenario_auth(driver, monitor, args):
             d.system_time()
             d.identity()
             d.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_FIXED)
-            d.authentication(pages=args.auth_pages)
+            d.authentication(length=args.auth_length)
 
     run_periodic(driver, monitor, args, per_tick)
 
@@ -494,7 +498,8 @@ def main():
     p.add_argument("--armed", action="store_true",
                    help="send an armed autopilot HEARTBEAT (exercises takeoff-position capture)")
     p.add_argument("--location-rate", type=float, default=2.0, help="LOCATION send rate (Hz)")
-    p.add_argument("--auth-pages", type=int, default=2, help="authentication pages for 'auth'")
+    p.add_argument("--auth-length", type=int, default=64,
+                   help="authentication signature length in bytes for 'auth' (split across pages)")
 
     p.add_argument("scenario", choices=sorted(SCENARIOS), help="what to run")
     args = p.parse_args()
