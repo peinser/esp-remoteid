@@ -11,6 +11,15 @@ typedef enum remoteid_store_update_type {
     REMOTEID_STORE_UPDATE_OPERATOR_ID,
     REMOTEID_STORE_UPDATE_LOCATION,
     REMOTEID_STORE_UPDATE_SYSTEM,
+    // Operator position only, from OPEN_DRONE_ID_SYSTEM_UPDATE. Leaves the
+    // category/classification/area fields from the last full System untouched.
+    REMOTEID_STORE_UPDATE_SYSTEM_UPDATE,
+    // Drop a stale live operator position. Carries no payload.
+    REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE,
+    REMOTEID_STORE_UPDATE_SELF_ID,
+    // A single received Authentication page. The store accumulates pages and
+    // marks external auth ready once 0..LastPageIndex have all arrived.
+    REMOTEID_STORE_UPDATE_AUTH,
     // Snapshot the current location into the System operator position fields.
     // Carries no payload; the store reads from its own location state atomically.
     REMOTEID_STORE_UPDATE_TAKEOFF,
@@ -27,6 +36,14 @@ typedef struct remoteid_store_update {
         struct {
             char operator_id[ODID_ID_SIZE + 1];
         } operator_id;
+        struct {
+            ODID_desctype_t desc_type;
+            char desc[ODID_STR_SIZE + 1];
+        } self_id;
+        struct {
+            // One decoded Authentication page as received from the input link.
+            ODID_Auth_data page;
+        } auth;
         struct {
             bool has_position;
             double latitude;
@@ -60,6 +77,12 @@ typedef struct remoteid_store_update {
             ODID_category_EU_t eu_category;
             ODID_class_EU_t eu_class;
         } system;
+        struct {
+            bool has_operator_position;
+            double operator_latitude;
+            double operator_longitude;
+            float operator_altitude_geo_m;
+        } system_update;
     } data;
 } remoteid_store_update_t;
 

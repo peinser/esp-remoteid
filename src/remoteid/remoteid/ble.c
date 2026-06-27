@@ -32,6 +32,16 @@
 
 static const char *TAG = "remoteid_ble";
 
+// Auth pages are broadcast when either local Ed25519 signing or input-link
+// (MAVLink) authentication can supply them. The schedule reserves one slot per
+// ODID auth page; slots beyond the number of populated pages are skipped at
+// runtime without consuming an advertising interval (see the transport task).
+#if CONFIG_REMOTEID_AUTH_ED25519 || CONFIG_REMOTEID_MAVLINK_INPUT
+#define REMOTEID_BLE_AUTH_PAGES 1
+#else
+#define REMOTEID_BLE_AUTH_PAGES 0
+#endif
+
 static const uint8_t s_message_schedule[] = {
     REMOTEID_MESSAGE_BASIC_ID,
     REMOTEID_MESSAGE_LOCATION,
@@ -41,11 +51,25 @@ static const uint8_t s_message_schedule[] = {
     REMOTEID_MESSAGE_LOCATION,
     REMOTEID_MESSAGE_OPERATOR_ID,
     REMOTEID_MESSAGE_LOCATION,
-#if CONFIG_REMOTEID_AUTH_ED25519
+    REMOTEID_MESSAGE_SELF_ID,
+    REMOTEID_MESSAGE_LOCATION,
+#if REMOTEID_BLE_AUTH_PAGES
     REMOTEID_MESSAGE_AUTH_0,
     REMOTEID_MESSAGE_AUTH_1,
     REMOTEID_MESSAGE_AUTH_2,
     REMOTEID_MESSAGE_AUTH_3,
+    REMOTEID_MESSAGE_AUTH_4,
+    REMOTEID_MESSAGE_AUTH_5,
+    REMOTEID_MESSAGE_AUTH_6,
+    REMOTEID_MESSAGE_AUTH_7,
+    REMOTEID_MESSAGE_AUTH_8,
+    REMOTEID_MESSAGE_AUTH_9,
+    REMOTEID_MESSAGE_AUTH_10,
+    REMOTEID_MESSAGE_AUTH_11,
+    REMOTEID_MESSAGE_AUTH_12,
+    REMOTEID_MESSAGE_AUTH_13,
+    REMOTEID_MESSAGE_AUTH_14,
+    REMOTEID_MESSAGE_AUTH_15,
 #endif
 };
 
@@ -107,6 +131,9 @@ typedef struct {
     uint8_t                   counters[ODID_MSG_COUNTER_AMOUNT];
     size_t                    schedule_index;
     bool                      started;
+    // Last auth page index populated this cycle (0-based), or -1 if none are
+    // available. Set when the page-0 slot is reached and read for pages 1..N.
+    int                       auth_last_page;
 } ble_transport_ctx_t;
 
 static esp_err_t advertise_ble(ble_transport_ctx_t *ctx, const uint8_t message[ODID_MESSAGE_SIZE])
@@ -174,17 +201,30 @@ static void remoteid_ble_transport_task(void *arg)
 
         uint8_t schedule_entry = s_message_schedule[ctx->schedule_index];
         bool is_auth_page = (schedule_entry >= REMOTEID_MESSAGE_COUNT);
+        bool skipped = false;
 
         if (is_auth_page) {
             int page = schedule_entry - REMOTEID_MESSAGE_COUNT;
             if (page == 0) {
-                // Sign the bundle as-is: these are exactly the bytes last broadcast
-                // for each message type. Re-encoding here would diverge (system timestamp
-                // advances every second) causing receivers to fail verification.
-                remoteid_auth_sign_bundle(&ctx->bundle);
+                // Authentication received over the input link supersedes locally
+                // generated signatures. Either way the bundle is filled as-is from
+                // the bytes last broadcast for each message type; re-encoding here
+                // would diverge (the System timestamp advances every second),
+                // causing receivers to fail verification.
+                int last_page = remoteid_auth_apply_external_bundle(&ctx->bundle, &snapshot);
+                if (last_page < 0) {
+                    last_page = remoteid_auth_sign_bundle(&ctx->bundle);
+                }
+                ctx->auth_last_page = last_page;
             }
-            if (advertise_ble(ctx, ctx->bundle.auth_pages[page]) == ESP_OK) {
-                ESP_LOGD(TAG, "%s advertising ODID auth page %d", ctx->label, page);
+            if (page <= ctx->auth_last_page) {
+                if (advertise_ble(ctx, ctx->bundle.auth_pages[page]) == ESP_OK) {
+                    ESP_LOGD(TAG, "%s advertising ODID auth page %d", ctx->label, page);
+                }
+            } else {
+                // No data for this page; advance to the next schedule slot
+                // immediately rather than holding an empty advertising interval.
+                skipped = true;
             }
         } else {
             remoteid_message_index_t idx = (remoteid_message_index_t)schedule_entry;
@@ -198,6 +238,9 @@ static void remoteid_ble_transport_task(void *arg)
         }
 
         ctx->schedule_index = (ctx->schedule_index + 1) % SCHEDULE_LEN;
+        if (skipped) {
+            continue;
+        }
         vTaskDelay(pdMS_TO_TICKS(is_auth_page ? REMOTEID_BLE_AUTH_PAGE_INTERVAL_MS
                                               : CONFIG_REMOTEID_BLE_TX_INTERVAL_MS));
     }
@@ -215,7 +258,7 @@ static void remoteid_ble_transport_task(void *arg)
 // when BLE5 is also active it takes instance 1.
 #define BLE4_LEGACY_ADV_INSTANCE 0
 
-static ble_transport_ctx_t s_ble4_ctx = { .instance = BLE4_LEGACY_ADV_INSTANCE, .label = "BLE4" };
+static ble_transport_ctx_t s_ble4_ctx = { .instance = BLE4_LEGACY_ADV_INSTANCE, .label = "BLE4", .auth_last_page = -1 };
 
 static esp_err_t configure_ble4_legacy(void)
 {
@@ -258,7 +301,7 @@ static esp_err_t configure_ble4_legacy(void)
 #define BLE5_LR_ADV_INSTANCE 0
 #endif
 
-static ble_transport_ctx_t s_ble5_ctx = { .instance = BLE5_LR_ADV_INSTANCE, .label = "BLE5" };
+static ble_transport_ctx_t s_ble5_ctx = { .instance = BLE5_LR_ADV_INSTANCE, .label = "BLE5", .auth_last_page = -1 };
 
 static esp_err_t configure_ble5_lr(void)
 {

@@ -78,6 +78,12 @@ static void fill_operator_id_data(const remoteid_state_t *state, ODID_OperatorID
     strncpy(data->OperatorId, state->operator_id, sizeof(data->OperatorId) - 1);
 }
 
+static void fill_self_id_data(const remoteid_state_t *state, ODID_SelfID_data *data)
+{
+    data->DescType = state->self_id_type;
+    strncpy(data->Desc, state->self_id_desc, sizeof(data->Desc) - 1);
+}
+
 static esp_err_t build_basic_id(const remoteid_state_t *state, uint8_t out[ODID_MESSAGE_SIZE])
 {
     ODID_BasicID_data data;
@@ -134,6 +140,20 @@ static esp_err_t build_operator_id(const remoteid_state_t *state, uint8_t out[OD
     return ESP_OK;
 }
 
+static esp_err_t build_self_id(const remoteid_state_t *state, uint8_t out[ODID_MESSAGE_SIZE])
+{
+    ODID_SelfID_data data;
+    ODID_SelfID_encoded encoded;
+
+    odid_initSelfIDData(&data);
+    fill_self_id_data(state, &data);
+
+    ESP_RETURN_ON_ERROR(check_odid_encode(encodeSelfIDMessage(&encoded, &data), "Self ID"), TAG, "");
+    memcpy(out, &encoded, ODID_MESSAGE_SIZE);
+
+    return ESP_OK;
+}
+
 esp_err_t remoteid_encode_uas_data(const remoteid_state_t *state, ODID_UAS_Data *uas_data)
 {
     odid_initUasData(uas_data);
@@ -141,13 +161,19 @@ esp_err_t remoteid_encode_uas_data(const remoteid_state_t *state, ODID_UAS_Data 
     fill_location_data(state, &uas_data->Location);
     fill_system_data(state, &uas_data->System);
     fill_operator_id_data(state, &uas_data->OperatorID);
+    fill_self_id_data(state, &uas_data->SelfID);
 
     uas_data->BasicIDValid[0] = 1;
     uas_data->LocationValid = 1;
     uas_data->SystemValid = 1;
     uas_data->OperatorIDValid = 1;
+    uas_data->SelfIDValid = 1;
 
-    remoteid_auth_sign_uas_data(uas_data);
+    // Authentication received over the input link wins; otherwise fall back to
+    // locally generated signatures (a no-op when local signing is disabled).
+    if (!remoteid_auth_apply_external_uas_data(uas_data, state)) {
+        remoteid_auth_sign_uas_data(uas_data);
+    }
 
     return ESP_OK;
 }
@@ -156,6 +182,7 @@ esp_err_t remoteid_encode_static_messages(const remoteid_state_t *state, remotei
 {
     ESP_RETURN_ON_ERROR(build_basic_id(state, bundle->messages[REMOTEID_MESSAGE_BASIC_ID]), TAG, "");
     ESP_RETURN_ON_ERROR(build_operator_id(state, bundle->messages[REMOTEID_MESSAGE_OPERATOR_ID]), TAG, "");
+    ESP_RETURN_ON_ERROR(build_self_id(state, bundle->messages[REMOTEID_MESSAGE_SELF_ID]), TAG, "");
 
     return ESP_OK;
 }

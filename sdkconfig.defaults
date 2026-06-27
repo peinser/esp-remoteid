@@ -12,3 +12,7 @@ CONFIG_REMOTEID_TRANSPORT_BLE=y
 CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON=n
 CONFIG_REMOTEID_TRANSPORT_WIFI_NAN=n
 CONFIG_REMOTEID_BLE_TX_POWER_P9=y
+# Leave the native USB port free for the MAVLink USB Serial/JTAG transport by
+# default; the secondary console is disabled so log output never shares that
+# port. Logs still go to the primary UART0 console.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
