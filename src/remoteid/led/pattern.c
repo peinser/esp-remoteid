@@ -40,6 +40,13 @@ static const led_pattern_step_t s_fast_strobe[] = {
     { false, 440 },
 };
 
+// Fast, even 5 Hz blink: a clear "something is wrong" signal, matching the onboard
+// RGB indicator's error cadence.
+static const led_pattern_step_t s_error[] = {
+    { true, 100 },
+    { false, 100 },
+};
+
 const led_pattern_step_t *led_pattern_steps(led_pattern_t pattern, size_t *count)
 {
     switch (pattern) {
@@ -61,6 +68,9 @@ const led_pattern_step_t *led_pattern_steps(led_pattern_t pattern, size_t *count
     case LED_PATTERN_FAST_STROBE:
         *count = sizeof(s_fast_strobe) / sizeof(s_fast_strobe[0]);
         return s_fast_strobe;
+    case LED_PATTERN_ERROR:
+        *count = sizeof(s_error) / sizeof(s_error[0]);
+        return s_error;
     case LED_PATTERN_BEACON_1HZ_SHORT:
     default:
         *count = sizeof(s_beacon_1hz_short) / sizeof(s_beacon_1hz_short[0]);

@@ -86,8 +86,20 @@ typedef struct remoteid_store_update {
     } data;
 } remoteid_store_update_t;
 
+// Why the device is (not) ready to broadcast / arm. Lets callers surface the
+// specific reason (e.g. an invalid serial) instead of a generic "not ready".
+typedef enum remoteid_health {
+    REMOTEID_HEALTH_OK = 0,
+    REMOTEID_HEALTH_WAITING_BASIC_ID,
+    REMOTEID_HEALTH_WAITING_OPERATOR_ID,
+    REMOTEID_HEALTH_INVALID_SERIAL,
+} remoteid_health_t;
+
 esp_err_t remoteid_store_start(const remoteid_state_t *initial_state);
 esp_err_t remoteid_store_submit(const remoteid_store_update_t *update, TickType_t timeout);
 esp_err_t remoteid_store_get_snapshot(remoteid_state_t *out);
 esp_err_t remoteid_store_wait_ready(TickType_t timeout);
 bool remoteid_store_is_ready(void);
+
+// Current readiness health (the reason behind remoteid_store_is_ready()).
+remoteid_health_t remoteid_store_health(void);

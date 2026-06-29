@@ -5,10 +5,18 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+
+#include "indicator.h"
+#include "lighting.h"
+
+#ifndef CONFIG_REMOTEID_COMPLIANCE_STRICT
+#define CONFIG_REMOTEID_COMPLIANCE_STRICT 0
+#endif
 
 #define REMOTEID_STORE_READY_BIT BIT0
 #define REMOTEID_STORE_QUEUE_LEN 8
@@ -21,6 +29,9 @@ static EventGroupHandle_t s_events;
 static remoteid_state_t s_state;
 static bool s_basic_id_valid;
 static bool s_operator_id_valid;
+// Set when a serial-typed UAS ID failed ANSI/CTA-2063-A validation, so the health
+// reason stays specific even after a bad serial is cleared in compliance mode.
+static bool s_serial_invalid;
 
 static bool usable_text_field(const char *value, const char *placeholder)
 {
@@ -35,6 +46,67 @@ static bool basic_id_is_usable(const remoteid_state_t *state)
 static bool operator_id_is_usable(const remoteid_state_t *state)
 {
     return usable_text_field(state->operator_id, "CHANGE_ME_OP_ID");
+}
+
+static bool serial_char_ok(char c)
+{
+    // Alphanumeric. CTA-2063-A excludes 'O'/'I' in the serial body, but we accept
+    // the full alnum set to avoid false rejects of validly-assigned codes.
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+// Validate the ANSI/CTA-2063-A structure: 4-char manufacturer code, a 1-char hex
+// length code (1..F), then exactly that many serial characters.
+static bool serial_is_valid_cta2063a(const char *s)
+{
+    size_t len = strlen(s);
+    if (len < 6) {
+        return false; // 4 (mfr) + 1 (length code) + >= 1 (serial)
+    }
+    for (size_t i = 0; i < 4; i++) {
+        if (!serial_char_ok(s[i])) {
+            return false;
+        }
+    }
+    char lc = s[4];
+    int serial_len;
+    if (lc >= '1' && lc <= '9')      serial_len = lc - '0';
+    else if (lc >= 'A' && lc <= 'F') serial_len = lc - 'A' + 10;
+    else if (lc >= 'a' && lc <= 'f') serial_len = lc - 'a' + 10;
+    else return false;
+
+    if (len != (size_t)(5 + serial_len)) {
+        return false; // declared length must match the actual serial length
+    }
+    for (size_t i = 5; i < len; i++) {
+        if (!serial_char_ok(s[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Recompute Basic ID validity, including the CTA-2063-A serial check. In strict
+// compliance mode a malformed serial is cleared (never broadcast) and raises the
+// error indicators; otherwise it is only logged.
+static void apply_basic_id_validity_locked(void)
+{
+    s_serial_invalid = false;
+
+    if (s_state.id_type == ODID_IDTYPE_SERIAL_NUMBER &&
+        s_state.uas_id[0] != '\0' &&
+        !serial_is_valid_cta2063a(s_state.uas_id)) {
+        ESP_LOGW(TAG, "UAS serial '%s' is not valid ANSI/CTA-2063-A", s_state.uas_id);
+        s_serial_invalid = true;
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT
+        ESP_LOGE(TAG, "compliance mode: rejecting invalid serial, refusing to broadcast");
+        s_state.uas_id[0] = '\0'; // clear so a malformed serial is never broadcast
+        indicator_set_error();
+        lighting_set_error();
+#endif
+    }
+
+    s_basic_id_valid = basic_id_is_usable(&s_state);
 }
 
 static void update_ready_state_locked(void)
@@ -65,8 +137,9 @@ static void apply_update_locked(const remoteid_store_update_t *update)
         strlcpy(s_state.uas_id, update->data.basic_id.uas_id, sizeof(s_state.uas_id));
         s_state.id_type = update->data.basic_id.id_type;
         s_state.ua_type = update->data.basic_id.ua_type;
-        s_basic_id_valid = basic_id_is_usable(&s_state);
-        ESP_LOGI(TAG, "updated Basic ID from input source (valid=%d)", s_basic_id_valid);
+        apply_basic_id_validity_locked();
+        ESP_LOGI(TAG, "updated Basic ID from input source (valid=%d, serial_invalid=%d)",
+                 s_basic_id_valid, s_serial_invalid);
         break;
     case REMOTEID_STORE_UPDATE_OPERATOR_ID:
         strlcpy(s_state.operator_id, update->data.operator_id.operator_id, sizeof(s_state.operator_id));
@@ -210,7 +283,7 @@ esp_err_t remoteid_store_start(const remoteid_state_t *initial_state)
 
     xSemaphoreTake(s_state_mutex, portMAX_DELAY);
     s_state = *initial_state;
-    s_basic_id_valid = basic_id_is_usable(&s_state);
+    apply_basic_id_validity_locked();
     s_operator_id_valid = operator_id_is_usable(&s_state);
     update_ready_state_locked();
     if (s_basic_id_valid && s_operator_id_valid) {
@@ -265,4 +338,25 @@ bool remoteid_store_is_ready(void)
         return false;
     }
     return (xEventGroupGetBits(s_events) & REMOTEID_STORE_READY_BIT) != 0;
+}
+
+remoteid_health_t remoteid_store_health(void)
+{
+    if (!s_state_mutex) {
+        return REMOTEID_HEALTH_WAITING_BASIC_ID;
+    }
+
+    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    remoteid_health_t health;
+    if (s_serial_invalid && !s_basic_id_valid) {
+        health = REMOTEID_HEALTH_INVALID_SERIAL;   // specific reason beats generic
+    } else if (!s_basic_id_valid) {
+        health = REMOTEID_HEALTH_WAITING_BASIC_ID;
+    } else if (!s_operator_id_valid) {
+        health = REMOTEID_HEALTH_WAITING_OPERATOR_ID;
+    } else {
+        health = REMOTEID_HEALTH_OK;
+    }
+    xSemaphoreGive(s_state_mutex);
+    return health;
 }

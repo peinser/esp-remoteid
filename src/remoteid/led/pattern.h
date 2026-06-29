@@ -12,6 +12,7 @@ typedef enum led_pattern {
     LED_PATTERN_STROBE_DOUBLE,
     LED_PATTERN_STROBE_TRIPLE,
     LED_PATTERN_FAST_STROBE,
+    LED_PATTERN_ERROR,        // fast 5 Hz blink for fault / compliance-failure indication
 } led_pattern_t;
 
 typedef struct led_pattern_step {

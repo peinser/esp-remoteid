@@ -88,6 +88,17 @@ config REMOTEID_OPERATOR_ID
         is broadcast in the Operator ID message. Must be 20 characters or
         fewer.
 
+config REMOTEID_COMPLIANCE_STRICT
+    bool "Strict compliance mode (reject malformed identity)"
+    default n
+    help
+        Enforce conformance checks at runtime. Currently: a UAS serial number
+        (when the ID type is Serial Number) that is not valid ANSI/CTA-2063-A is
+        rejected and cleared, the device refuses to become ready (no broadcast),
+        the error indicator is shown, and OPEN_DRONE_ID_ARM_STATUS reports the
+        specific failure. When disabled, a malformed serial is logged as a
+        warning but still broadcast (development convenience).
+
 config REMOTEID_STARTUP_DELAY_MS
     int "Startup delay before transmissions (ms)"
     default 10000

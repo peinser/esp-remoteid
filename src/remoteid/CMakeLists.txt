@@ -4,6 +4,7 @@ idf_component_register(
         "ota/ota.c"
         "remoteid/auth.c"
         "remoteid/ble.c"
+        "remoteid/clock.c"
         "remoteid/dronecan.c"
         "remoteid/encode.c"
         "led/indicator.c"

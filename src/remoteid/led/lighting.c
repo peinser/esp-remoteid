@@ -212,6 +212,7 @@ typedef struct lighting_output_state {
 static const char *TAG = "lighting";
 
 static _Atomic bool s_transports_started;
+static _Atomic bool s_error;
 static int64_t s_start_us;
 static lighting_output_state_t s_outputs[LIGHTING_OUTPUT_COUNT];
 
@@ -265,11 +266,21 @@ static bool output_should_be_on(size_t index, int64_t now_us)
         return false;
     }
 
+    uint32_t elapsed_ms = (uint32_t)((now_us - s_start_us) / 1000LL);
+
+    // An active error overrides every output with the error pattern and ignores the
+    // readiness gate, so a compliance fault (e.g. serial validation failure) is
+    // visible even before the device would otherwise broadcast. Phase 0 keeps all
+    // outputs blinking in unison. Colour depends on wiring; wire a red light to an
+    // output (or rely on the onboard RGB indicator) for a red fault signal.
+    if (atomic_load_explicit(&s_error, memory_order_acquire)) {
+        return led_pattern_is_on(LED_PATTERN_ERROR, elapsed_ms, 0);
+    }
+
     if (!atomic_load_explicit(&s_transports_started, memory_order_acquire) || !remoteid_store_is_ready()) {
         return false;
     }
 
-    uint32_t elapsed_ms = (uint32_t)((now_us - s_start_us) / 1000LL);
     return led_pattern_is_on(config->pattern, elapsed_ms, config->phase_ms);
 }
 
@@ -350,6 +361,11 @@ void lighting_mark_transports_started(void)
     atomic_store_explicit(&s_transports_started, true, memory_order_release);
 }
 
+void lighting_set_error(void)
+{
+    atomic_store_explicit(&s_error, true, memory_order_release);
+}
+
 #else
 
 esp_err_t lighting_init(void)
@@ -358,6 +374,10 @@ esp_err_t lighting_init(void)
 }
 
 void lighting_mark_transports_started(void)
+{
+}
+
+void lighting_set_error(void)
 {
 }
 

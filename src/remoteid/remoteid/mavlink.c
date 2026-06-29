@@ -14,6 +14,7 @@
 #if CONFIG_REMOTEID_MAVLINK_TRANSPORT_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"
 #endif
+#include "clock.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -468,38 +469,15 @@ static void handle_message_pack(const mavlink_message_t *message)
     }
 }
 
-#if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
-
-// Unix seconds at 2019-01-01T00:00:00Z, the OPEN_DRONE_ID_SYSTEM_UPDATE epoch.
-#define REMOTEID_ODID_EPOCH_2019 1546300800UL
-
-// Wall clock derived from MAVLink SYSTEM_TIME, expressed as the ODID-2019 second
-// that corresponded to esp_timer t=0. A single 32-bit value keeps reads/writes
-// atomic across the RX and producer tasks. Valid only once s_time_seeded is set.
-static volatile uint32_t s_odid_epoch_at_boot;
-static volatile bool     s_time_seeded;
-
+// Seed the shared UTC clock from the flight controller's SYSTEM_TIME so every
+// OpenDroneID timestamp reflects real time. Available whenever MAVLink input is
+// enabled, independent of the operator-location loop.
 static void capture_system_time(const mavlink_message_t *message)
 {
     mavlink_system_time_t msg = { 0 };
     mavlink_msg_system_time_decode(message, &msg);
-
-    uint32_t unix_sec = (uint32_t)(msg.time_unix_usec / 1000000ULL);
-    if (unix_sec <= REMOTEID_ODID_EPOCH_2019) {
-        return; // autopilot has no valid wall clock yet
-    }
-
-    uint32_t uptime_sec = (uint32_t)(esp_timer_get_time() / 1000000LL);
-    s_odid_epoch_at_boot = (unix_sec - REMOTEID_ODID_EPOCH_2019) - uptime_sec;
-    s_time_seeded = true;
+    remoteid_clock_set_utc(msg.time_unix_usec / 1000000ULL);
 }
-
-static uint32_t current_odid_timestamp(void)
-{
-    return s_odid_epoch_at_boot + (uint32_t)(esp_timer_get_time() / 1000000LL);
-}
-
-#endif /* CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP */
 
 static void handle_message(const mavlink_message_t *message)
 {
@@ -522,11 +500,9 @@ static void handle_message(const mavlink_message_t *message)
     case MAVLINK_MSG_ID_OPEN_DRONE_ID_SYSTEM_UPDATE:
         submit_system_update(message);
         break;
-#if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
     case MAVLINK_MSG_ID_SYSTEM_TIME:
         capture_system_time(message);
         break;
-#endif
     case MAVLINK_MSG_ID_OPEN_DRONE_ID_SELF_ID:
         submit_self_id(message);
         break;
@@ -651,7 +627,13 @@ static void remoteid_mavlink_status_task(void *arg)
     while (true) {
         uint8_t sysid = outgoing_system_id();
         bool ready = remoteid_store_is_ready();
-        const char *fail = "Remote ID identity not ready";
+        const char *fail;
+        switch (remoteid_store_health()) {
+        case REMOTEID_HEALTH_INVALID_SERIAL:      fail = "Invalid UAS serial (CTA-2063-A)"; break;
+        case REMOTEID_HEALTH_WAITING_OPERATOR_ID: fail = "Operator ID not set"; break;
+        case REMOTEID_HEALTH_WAITING_BASIC_ID:    fail = "UAS ID not set"; break;
+        default:                                  fail = "Remote ID not ready"; break;
+        }
         mavlink_message_t msg;
 
 #if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
@@ -715,14 +697,14 @@ static void remoteid_mavlink_operator_location_task(void *arg)
                         ESP_LOGW(TAG, "live operator location stale (%u ms), expiring", (unsigned)age_ms);
                     }
                 }
-            } else if (s_time_seeded) {
+            } else if (remoteid_clock_is_synced()) {
                 // Fixed/takeoff location: keep it fresh toward the autopilot.
                 int32_t lat = (int32_t)(snap.operator_latitude  * 1e7);
                 int32_t lon = (int32_t)(snap.operator_longitude * 1e7);
                 mavlink_message_t msg;
                 mavlink_msg_open_drone_id_system_update_pack_chan(
                     outgoing_system_id(), compid, MAVLINK_COMM_1, &msg,
-                    0, 0, lat, lon, snap.operator_altitude_geo_m, current_odid_timestamp());
+                    0, 0, lat, lon, snap.operator_altitude_geo_m, remoteid_clock_odid_2019());
                 send_mavlink(&msg);
                 ESP_LOGD(TAG, "republished fixed operator location via System Update");
             } else {

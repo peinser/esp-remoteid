@@ -3,9 +3,9 @@
 #include <string.h>
 
 #include "auth.h"
+#include "clock.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "opendroneid.h"
 
 static const char *TAG = "remoteid_encode";
@@ -18,11 +18,6 @@ static esp_err_t check_odid_encode(int rc, const char *message_name)
 
     ESP_LOGE(TAG, "failed to encode %s OpenDroneID message", message_name);
     return ESP_FAIL;
-}
-
-static uint32_t uptime_seconds(void)
-{
-    return (uint32_t)(esp_timer_get_time() / 1000000ULL);
 }
 
 static void fill_basic_id_data(const remoteid_state_t *state, ODID_BasicID_data *data)
@@ -48,10 +43,14 @@ static void fill_location_data(const remoteid_state_t *state, ODID_Location_data
     data->VertAccuracy    = state->vert_acc;
     data->BaroAccuracy    = state->baro_acc;
     data->SpeedAccuracy   = state->speed_acc;
-    data->TSAccuracy      = state->ts_acc;
-    data->TimeStamp       = state->timestamp >= 0.0f
-                            ? state->timestamp
-                            : (float)(uptime_seconds() % MAX_TIMESTAMP);
+    if (state->timestamp >= 0.0f) {
+        data->TimeStamp  = state->timestamp;          // flight-controller (GPS) time
+        data->TSAccuracy = state->ts_acc;
+    } else {
+        data->TimeStamp  = remoteid_clock_seconds_after_hour();
+        // Don't claim accurate time while the shared clock is unsynced.
+        data->TSAccuracy = remoteid_clock_is_synced() ? state->ts_acc : ODID_TIME_ACC_UNKNOWN;
+    }
 }
 
 static void fill_system_data(const remoteid_state_t *state, ODID_System_data *data)
@@ -69,7 +68,7 @@ static void fill_system_data(const remoteid_state_t *state, ODID_System_data *da
     data->OperatorAltitudeGeo  = state->has_operator_position
                                  ? state->operator_altitude_geo_m
                                  : (float)INV_ALT;
-    data->Timestamp            = uptime_seconds();
+    data->Timestamp            = remoteid_clock_odid_2019();
 }
 
 static void fill_operator_id_data(const remoteid_state_t *state, ODID_OperatorID_data *data)
