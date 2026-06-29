@@ -626,9 +626,11 @@ static void remoteid_mavlink_status_task(void *arg)
 
     while (true) {
         uint8_t sysid = outgoing_system_id();
-        bool ready = remoteid_store_is_ready();
+        remoteid_health_t health = remoteid_store_health();
+        bool ready = (health == REMOTEID_HEALTH_OK);
         const char *fail;
-        switch (remoteid_store_health()) {
+        switch (health) {
+        case REMOTEID_HEALTH_SELFTEST_FAILED:     fail = "Remote ID self-test failed"; break;
         case REMOTEID_HEALTH_INVALID_SERIAL:      fail = "Invalid UAS serial (CTA-2063-A)"; break;
         case REMOTEID_HEALTH_WAITING_OPERATOR_ID: fail = "Operator ID not set"; break;
         case REMOTEID_HEALTH_WAITING_BASIC_ID:    fail = "UAS ID not set"; break;

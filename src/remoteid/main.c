@@ -13,6 +13,7 @@
 #include "led/lighting.h"
 #include "remoteid/mavlink.h"
 #include "remoteid/model.h"
+#include "remoteid/selftest.h"
 #include "remoteid/store.h"
 #include "remoteid/wifi.h"
 #include "sdkconfig.h"
@@ -49,14 +50,18 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_REMOTEID_STARTUP_DELAY_MS));
     }
 
+    // Transport init failures are reported to the self-test (which raises the error
+    // indicator + system-failure status) rather than aborting, so the device still
+    // runs on any healthy radio and can signal the fault.
 #if CONFIG_REMOTEID_TRANSPORT_BLE || CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE
-    ESP_ERROR_CHECK(remoteid_ble_start());
+    remoteid_selftest_report_transport("BLE", remoteid_ble_start() == ESP_OK);
 #endif
 
 #if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON || CONFIG_REMOTEID_TRANSPORT_WIFI_NAN
-    ESP_ERROR_CHECK(remoteid_wifi_start());
+    remoteid_selftest_report_transport("Wi-Fi", remoteid_wifi_start() == ESP_OK);
 #endif
 
     indicator_mark_transports_started();
     lighting_mark_transports_started();
+    remoteid_selftest_start();
 }

@@ -32,6 +32,9 @@ static bool s_operator_id_valid;
 // Set when a serial-typed UAS ID failed ANSI/CTA-2063-A validation, so the health
 // reason stays specific even after a bad serial is cleared in compliance mode.
 static bool s_serial_invalid;
+// Latched when the self-test fails: broadcast status is forced to system-failure
+// and arming is blocked.
+static bool s_selftest_failed;
 
 static bool usable_text_field(const char *value, const char *placeholder)
 {
@@ -152,7 +155,10 @@ static void apply_update_locked(const remoteid_store_update_t *update)
         s_state.longitude         = update->data.location.longitude;
         s_state.altitude_geo_m    = update->data.location.altitude_geo_m;
         s_state.altitude_baro_m   = update->data.location.altitude_baro_m;
-        s_state.status            = update->data.location.status;
+        // A latched self-test failure keeps the broadcast operational status at
+        // system-failure regardless of what the flight controller reports.
+        s_state.status            = s_selftest_failed ? ODID_STATUS_REMOTE_ID_SYSTEM_FAILURE
+                                                      : update->data.location.status;
         s_state.speed_horizontal  = update->data.location.speed_horizontal;
         s_state.speed_vertical    = update->data.location.speed_vertical;
         s_state.direction         = update->data.location.direction;
@@ -199,6 +205,11 @@ static void apply_update_locked(const remoteid_store_update_t *update)
     case REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE:
         s_state.has_operator_position = false;
         ESP_LOGW(TAG, "operator position expired and cleared");
+        break;
+    case REMOTEID_STORE_UPDATE_SELFTEST_FAILED:
+        s_selftest_failed = true;
+        s_state.status = ODID_STATUS_REMOTE_ID_SYSTEM_FAILURE;
+        ESP_LOGE(TAG, "self-test failed: broadcasting Remote ID system-failure status");
         break;
     case REMOTEID_STORE_UPDATE_SELF_ID:
         s_state.self_id_type = update->data.self_id.desc_type;
@@ -348,7 +359,9 @@ remoteid_health_t remoteid_store_health(void)
 
     xSemaphoreTake(s_state_mutex, portMAX_DELAY);
     remoteid_health_t health;
-    if (s_serial_invalid && !s_basic_id_valid) {
+    if (s_selftest_failed) {
+        health = REMOTEID_HEALTH_SELFTEST_FAILED;  // most severe
+    } else if (s_serial_invalid && !s_basic_id_valid) {
         health = REMOTEID_HEALTH_INVALID_SERIAL;   // specific reason beats generic
     } else if (!s_basic_id_valid) {
         health = REMOTEID_HEALTH_WAITING_BASIC_ID;

@@ -12,6 +12,7 @@ idf_component_register(
         "remoteid/mavlink.c"
         "remoteid/model.c"
         "led/pattern.c"
+        "remoteid/selftest.c"
         "remoteid/store.c"
         "remoteid/wifi.c"
     INCLUDE_DIRS

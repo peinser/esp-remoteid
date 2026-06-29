@@ -16,6 +16,8 @@ typedef enum remoteid_store_update_type {
     REMOTEID_STORE_UPDATE_SYSTEM_UPDATE,
     // Drop a stale live operator position. Carries no payload.
     REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE,
+    // Self-test failed: latch a Remote ID system-failure. Carries no payload.
+    REMOTEID_STORE_UPDATE_SELFTEST_FAILED,
     REMOTEID_STORE_UPDATE_SELF_ID,
     // A single received Authentication page. The store accumulates pages and
     // marks external auth ready once 0..LastPageIndex have all arrived.
@@ -93,6 +95,7 @@ typedef enum remoteid_health {
     REMOTEID_HEALTH_WAITING_BASIC_ID,
     REMOTEID_HEALTH_WAITING_OPERATOR_ID,
     REMOTEID_HEALTH_INVALID_SERIAL,
+    REMOTEID_HEALTH_SELFTEST_FAILED,
 } remoteid_health_t;
 
 esp_err_t remoteid_store_start(const remoteid_state_t *initial_state);
