@@ -35,6 +35,9 @@ static bool s_serial_invalid;
 // Latched when the self-test fails: broadcast status is forced to system-failure
 // and arming is blocked.
 static bool s_selftest_failed;
+// Live autopilot emergency state (from HEARTBEAT). Forces EMERGENCY status unless a
+// system-failure is latched; clears when the autopilot recovers.
+static bool s_autopilot_emergency;
 
 static bool usable_text_field(const char *value, const char *placeholder)
 {
@@ -155,10 +158,11 @@ static void apply_update_locked(const remoteid_store_update_t *update)
         s_state.longitude         = update->data.location.longitude;
         s_state.altitude_geo_m    = update->data.location.altitude_geo_m;
         s_state.altitude_baro_m   = update->data.location.altitude_baro_m;
-        // A latched self-test failure keeps the broadcast operational status at
-        // system-failure regardless of what the flight controller reports.
-        s_state.status            = s_selftest_failed ? ODID_STATUS_REMOTE_ID_SYSTEM_FAILURE
-                                                      : update->data.location.status;
+        // Status precedence: a latched RID system-failure first, then a live
+        // autopilot emergency, otherwise whatever the LOCATION source reported.
+        s_state.status            = s_selftest_failed    ? ODID_STATUS_REMOTE_ID_SYSTEM_FAILURE
+                                  : s_autopilot_emergency ? ODID_STATUS_EMERGENCY
+                                                          : update->data.location.status;
         s_state.speed_horizontal  = update->data.location.speed_horizontal;
         s_state.speed_vertical    = update->data.location.speed_vertical;
         s_state.direction         = update->data.location.direction;
@@ -210,6 +214,16 @@ static void apply_update_locked(const remoteid_store_update_t *update)
         s_selftest_failed = true;
         s_state.status = ODID_STATUS_REMOTE_ID_SYSTEM_FAILURE;
         ESP_LOGE(TAG, "self-test failed: broadcasting Remote ID system-failure status");
+        break;
+    case REMOTEID_STORE_UPDATE_EMERGENCY:
+        s_autopilot_emergency = update->data.emergency.active;
+        // Reflect an asserted emergency immediately; on clear the next Location
+        // update restores the reported ground/airborne status. System-failure,
+        // being a latched RID fault, keeps precedence.
+        if (s_autopilot_emergency && !s_selftest_failed) {
+            s_state.status = ODID_STATUS_EMERGENCY;
+        }
+        ESP_LOGW(TAG, "autopilot emergency %s", s_autopilot_emergency ? "asserted" : "cleared");
         break;
     case REMOTEID_STORE_UPDATE_SELF_ID:
         s_state.self_id_type = update->data.self_id.desc_type;

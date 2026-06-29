@@ -18,6 +18,8 @@ typedef enum remoteid_store_update_type {
     REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE,
     // Self-test failed: latch a Remote ID system-failure. Carries no payload.
     REMOTEID_STORE_UPDATE_SELFTEST_FAILED,
+    // Live autopilot emergency state, derived from HEARTBEAT system_status.
+    REMOTEID_STORE_UPDATE_EMERGENCY,
     REMOTEID_STORE_UPDATE_SELF_ID,
     // A single received Authentication page. The store accumulates pages and
     // marks external auth ready once 0..LastPageIndex have all arrived.
@@ -85,6 +87,9 @@ typedef struct remoteid_store_update {
             double operator_longitude;
             float operator_altitude_geo_m;
         } system_update;
+        struct {
+            bool active;
+        } emergency;
     } data;
 } remoteid_store_update_t;
 

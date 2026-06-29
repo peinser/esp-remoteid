@@ -210,6 +210,25 @@ config REMOTEID_MAVLINK_TARGET_COMPONENT
         component or broadcast target 0 are accepted. Leave as 0 to accept all
         components.
 
+config REMOTEID_MAVLINK_EMERGENCY_FROM_HEARTBEAT
+    bool "Derive ODID emergency status from autopilot HEARTBEAT"
+    default n
+    help
+        Map the flight controller's HEARTBEAT system_status to the OpenDroneID
+        operational status: MAV_STATE_EMERGENCY and MAV_STATE_FLIGHT_TERMINATION
+        are broadcast as EMERGENCY. Useful when the LOCATION source does not set
+        the ODID status itself. The status tracks the autopilot live and clears
+        when it recovers. (A latched self-test system-failure keeps precedence.)
+
+config REMOTEID_MAVLINK_EMERGENCY_INCLUDE_CRITICAL
+    bool "Also treat MAV_STATE_CRITICAL (failsafe) as emergency"
+    depends on REMOTEID_MAVLINK_EMERGENCY_FROM_HEARTBEAT
+    default n
+    help
+        Include CRITICAL (e.g. RC or battery failsafe) as an OpenDroneID
+        emergency. Off by default because routine failsafes such as a battery RTL
+        set CRITICAL, which may be too aggressive to broadcast as an emergency.
+
 config REMOTEID_MAVLINK_STATUS_OUTPUT
     bool "Send HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS to the flight controller"
     default n

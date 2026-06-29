@@ -106,6 +106,29 @@ static void submit_heartbeat(const mavlink_message_t *message)
     }
 
     s_was_armed = is_armed;
+
+#if CONFIG_REMOTEID_MAVLINK_EMERGENCY_FROM_HEARTBEAT
+    // Derive the OpenDroneID emergency status from the autopilot's HEARTBEAT
+    // system_status. Pushed only on change so the store status tracks the vehicle.
+    static bool s_emergency_state = false;
+    bool emergency = (msg.system_status == MAV_STATE_EMERGENCY ||
+                      msg.system_status == MAV_STATE_FLIGHT_TERMINATION
+#if CONFIG_REMOTEID_MAVLINK_EMERGENCY_INCLUDE_CRITICAL
+                      || msg.system_status == MAV_STATE_CRITICAL
+#endif
+                      );
+    if (emergency != s_emergency_state) {
+        remoteid_store_update_t update = {
+            .type = REMOTEID_STORE_UPDATE_EMERGENCY,
+            .data.emergency.active = emergency,
+        };
+        if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
+            s_emergency_state = emergency;
+            ESP_LOGW(TAG, "autopilot emergency %s (system_status=%u)",
+                     emergency ? "ASSERTED" : "cleared", msg.system_status);
+        }
+    }
+#endif
 }
 
 static void submit_basic_id(const mavlink_message_t *message)
