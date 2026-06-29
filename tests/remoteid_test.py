@@ -238,11 +238,12 @@ class Driver:
             self.a.target_system, self.a.target_component,
             int(lat * 1e7), int(lon * 1e7), float(alt), odid_timestamp_now())
 
-    def location(self, lat, lon, alt, direction_deg, speed_h):
+    def location(self, lat, lon, alt, direction_deg, speed_h, speed_v=0.0):
+        # MAVLink wire units: direction in cdeg, speeds in cm/s.
         self.conn.mav.open_drone_id_location_send(
             self.a.target_system, self.a.target_component, self.id_or_mac,
             mavlink.MAV_ODID_STATUS_AIRBORNE,
-            int(direction_deg * 100) % 36000, int(speed_h * 100), 0,
+            int(direction_deg * 100) % 36000, int(speed_h * 100), int(speed_v * 100),
             int(lat * 1e7), int(lon * 1e7), -1000.0, float(alt),
             mavlink.MAV_ODID_HEIGHT_REF_OVER_TAKEOFF, float(alt),
             mavlink.MAV_ODID_HOR_ACC_3_METER, mavlink.MAV_ODID_VER_ACC_10_METER,
@@ -294,7 +295,8 @@ class Driver:
 # --------------------------------------------------------------------------- #
 
 def moving_position(args, t):
-    """A circular flight path of radius args.radius around the start point."""
+    """Circular flight path of radius args.radius; returns full kinematic state
+    (lat, lon, alt, direction_deg, speed_h, speed_v)."""
     omega = args.speed / max(args.radius, 1.0)        # rad/s
     theta = omega * t
     dlat = (args.radius / 111320.0) * math.cos(theta)
@@ -303,7 +305,8 @@ def moving_position(args, t):
     lon = args.lon + dlon
     direction = (math.degrees(theta) + 90.0) % 360.0  # tangent to the circle
     alt = args.alt + 5.0 * math.sin(theta)
-    return lat, lon, alt, direction
+    speed_v = 5.0 * omega * math.cos(theta)           # d(alt)/dt, m/s (climb +)
+    return lat, lon, alt, direction, args.speed, speed_v
 
 
 def run_periodic(driver, monitor, args, per_tick):
@@ -330,7 +333,7 @@ def scenario_drive(driver, monitor, args):
     state = {"last_slow": -10.0}
 
     def per_tick(d, now, tick):
-        d.location(*moving_position(args, now), args.speed)
+        d.location(*moving_position(args, now))
         # ~1 Hz: heartbeat, time seed, identity, operator location.
         if now - state["last_slow"] >= 1.0:
             state["last_slow"] = now
@@ -341,7 +344,7 @@ def scenario_drive(driver, monitor, args):
                 d.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_FIXED)
             elif args.operator == "live":
                 d.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS)
-                lat, lon, alt, _ = moving_position(args, now)
+                lat, lon, alt = moving_position(args, now)[:3]
                 d.system_update(lat, lon, alt)   # live stream follows the drone
 
     run_periodic(driver, monitor, args, per_tick)
@@ -351,7 +354,7 @@ def scenario_pack(driver, monitor, args):
     print("Sending identity via OPEN_DRONE_ID_MESSAGE_PACK + individual LOCATION/SYSTEM.\n")
 
     def per_tick(d, now, tick):
-        d.location(*moving_position(args, now), args.speed)
+        d.location(*moving_position(args, now))
         if tick % max(int(1.0 / args.location_period), 1) == 0:
             d.heartbeat()
             d.system_time()
@@ -365,7 +368,7 @@ def scenario_auth(driver, monitor, args):
     print("Sending identity + AUTHENTICATION pages.\n")
 
     def per_tick(d, now, tick):
-        d.location(*moving_position(args, now), args.speed)
+        d.location(*moving_position(args, now))
         if tick % max(int(1.0 / args.location_period), 1) == 0:
             d.heartbeat()
             d.system_time()
@@ -422,7 +425,7 @@ def scenario_selftest(driver, monitor, args):
         driver.heartbeat()
         driver.system_time()
         driver.identity()
-        driver.location(*moving_position(args, 0), args.speed)
+        driver.location(*moving_position(args, 0))
         driver.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_FIXED)
 
     good = wait_for(

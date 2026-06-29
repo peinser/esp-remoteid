@@ -175,8 +175,13 @@ static void submit_location(const mavlink_message_t *message)
         .data.location.altitude_geo_m   = msg.altitude_geodetic  <= (float)INV_ALT ? (float)INV_ALT : msg.altitude_geodetic,
         .data.location.altitude_baro_m  = msg.altitude_barometric <= (float)INV_ALT ? (float)INV_ALT : msg.altitude_barometric,
         .data.location.status           = (ODID_status_t)msg.status,
-        .data.location.speed_horizontal = msg.speed_horizontal >= (float)INV_SPEED_H ? (float)INV_SPEED_H : msg.speed_horizontal,
-        .data.location.speed_vertical   = msg.speed_vertical   >= (float)INV_SPEED_V ? (float)INV_SPEED_V : msg.speed_vertical,
+        // MAVLink speeds are cm/s (unknown: 25500 / 6300); ODID wants m/s, so scale by 100.
+        .data.location.speed_horizontal = msg.speed_horizontal >= 25500
+                                          ? (float)INV_SPEED_H
+                                          : msg.speed_horizontal / 100.0f,
+        .data.location.speed_vertical   = msg.speed_vertical   >= 6300
+                                          ? (float)INV_SPEED_V
+                                          : msg.speed_vertical   / 100.0f,
         .data.location.direction        = msg.direction >= 36100
                                           ? (float)INV_DIR
                                           : msg.direction / 100.0f,

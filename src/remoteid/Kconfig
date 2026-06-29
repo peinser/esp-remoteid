@@ -42,8 +42,33 @@ config REMOTEID_TRANSPORT_WIFI_NAN
         Awareness Networking sync/action frames. This is a separate transport
         from Wi-Fi Beacon and receiver apps may support one but not the other.
 
+choice REMOTEID_IDENTITY_SOURCE
+    prompt "Remote ID identity source"
+    default REMOTEID_IDENTITY_STATIC
+    help
+        Where the broadcast identity (UAS ID, Operator ID, ID type, UA type,
+        EU operation category and equipment class) comes from.
+
+config REMOTEID_IDENTITY_STATIC
+    bool "Static (configured here, flashed in)"
+    help
+        Identity is taken from the options below at build time. Use this for a
+        standalone module on a fixed drone.
+
+config REMOTEID_IDENTITY_RUNTIME
+    bool "Runtime (provided over MAVLink / DroneCAN)"
+    help
+        Identity is left empty and undeclared at boot and supplied at runtime by
+        a flight controller or GCS. The module stays not-ready (no broadcast)
+        until a valid Basic ID and Operator ID arrive. The static identity
+        options below are hidden in this mode, since they would only be
+        overwritten by the incoming messages.
+
+endchoice
+
 config REMOTEID_UAS_ID
     string "UAS ID (max 20 characters)"
+    depends on REMOTEID_IDENTITY_STATIC
     default "CHANGE_ME_UAS_ID"
     help
         Unique identifier for this drone. For self-built drones without a
@@ -55,6 +80,7 @@ config REMOTEID_UAS_ID
 
 config REMOTEID_OPERATOR_ID
     string "Operator registration ID (max 20 characters)"
+    depends on REMOTEID_IDENTITY_STATIC
     default "CHANGE_ME_OP_ID"
     help
         Your national pilot/operator registration number as issued by your
@@ -355,6 +381,7 @@ endif # REMOTEID_DRONECAN_INPUT
 
 choice REMOTEID_ID_TYPE
     prompt "UAS ID type"
+    depends on REMOTEID_IDENTITY_STATIC
     default REMOTEID_ID_TYPE_CAA_REG
     help
         ASTM F3411 ID type encoded in the BasicID message.
@@ -373,6 +400,7 @@ endchoice
 
 choice REMOTEID_UA_TYPE
     prompt "UA type"
+    depends on REMOTEID_IDENTITY_STATIC
     default REMOTEID_UA_TYPE_MULTIROTOR
     help
         Aircraft type declared in the BasicID message.
@@ -393,6 +421,7 @@ endchoice
 
 choice REMOTEID_EU_CATEGORY
     prompt "EU operation category"
+    depends on REMOTEID_IDENTITY_STATIC
     default REMOTEID_EU_CATEGORY_OPEN
     help
         EU Drone Regulation operation category for the System message.
@@ -416,6 +445,7 @@ endchoice
 
 choice REMOTEID_EU_CLASS
     prompt "EU equipment class"
+    depends on REMOTEID_IDENTITY_STATIC
     default REMOTEID_EU_CLASS_UNDECLARED
     help
         EU equipment class label for the System message. Self-built drones

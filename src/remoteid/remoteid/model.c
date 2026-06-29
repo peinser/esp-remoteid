@@ -4,6 +4,8 @@
 
 #include "config.h"
 
+#if CONFIG_REMOTEID_IDENTITY_STATIC
+
 static ODID_idtype_t configured_id_type(void)
 {
 #if CONFIG_REMOTEID_ID_TYPE_SERIAL_NUMBER
@@ -60,14 +62,29 @@ static ODID_class_EU_t configured_eu_class(void)
 #endif
 }
 
+#endif /* CONFIG_REMOTEID_IDENTITY_STATIC */
+
 esp_err_t remoteid_model_init(remoteid_state_t *state)
 {
     memset(state, 0, sizeof(*state));
 
+#if CONFIG_REMOTEID_IDENTITY_STATIC
     strncpy(state->uas_id, REMOTEID_UAS_ID, sizeof(state->uas_id) - 1);
     strncpy(state->operator_id, REMOTEID_OPERATOR_ID, sizeof(state->operator_id) - 1);
-    state->id_type = configured_id_type();
-    state->ua_type = configured_ua_type();
+    state->id_type     = configured_id_type();
+    state->ua_type     = configured_ua_type();
+    state->eu_category = configured_eu_category();
+    state->eu_class    = configured_eu_class();
+#else
+    // Runtime identity: stay empty and undeclared until a flight controller or
+    // GCS supplies it over MAVLink/DroneCAN. The readiness gate keeps the module
+    // from broadcasting until a valid Basic ID and Operator ID arrive.
+    // (memset already cleared uas_id/operator_id.)
+    state->id_type     = ODID_IDTYPE_NONE;
+    state->ua_type     = ODID_UATYPE_NONE;
+    state->eu_category = ODID_CATEGORY_EU_UNDECLARED;
+    state->eu_class    = ODID_CLASS_EU_UNDECLARED;
+#endif
 
     state->speed_horizontal = (float)INV_SPEED_H;
     state->speed_vertical   = (float)INV_SPEED_V;
@@ -87,8 +104,6 @@ esp_err_t remoteid_model_init(remoteid_state_t *state)
     state->area_ceiling_m         = (float)INV_ALT;
     state->area_floor_m           = (float)INV_ALT;
     state->classification_type    = ODID_CLASSIFICATION_TYPE_EU;
-    state->eu_category            = configured_eu_category();
-    state->eu_class               = configured_eu_class();
 
 #if CONFIG_REMOTEID_HAS_POSITION
     state->has_position          = true;
