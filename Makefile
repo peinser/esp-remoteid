@@ -13,10 +13,41 @@ SOCAT_PORT ?= 54321
 BAUD ?= 115200
 OTA_HOST ?= http://192.168.4.1
 
-.PHONY: help set-target reset menuconfig build flash flash-idf encrypted-flash nvs-flash provision-key ota-status ota-flash ota-provision-key ota-rollback ota-factory-reset monitor monitor-raw probe clean bridge-host bridge-container host-setup-socat
+.PHONY: help host-test set-target reset menuconfig build flash flash-idf encrypted-flash nvs-flash provision-key ota-status ota-flash ota-provision-key ota-rollback ota-factory-reset monitor monitor-raw probe clean bridge-host bridge-container host-setup-socat
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# Host regression tests: the firmware logic compiled for the host against stub
+# ESP-IDF headers in tests/host/stub. No hardware or ESP-IDF needed.
+HOST_CC ?= cc
+HOST_PYTHON ?= python3
+HOST_TEST_OUT := build/host-test
+HOST_ODID := third_party/opendroneid-core-c/libopendroneid
+HOST_MONOCYPHER := third_party/monocypher/src
+HOST_CFLAGS := -std=gnu17 -Wall -Wextra -Wno-unused-parameter -DODID_AUTH_MAX_PAGES=4 \
+	-Itests/host/stub -Isrc/remoteid/remoteid -I$(HOST_ODID) -Ithird_party/mavlink_c_library_v2
+
+host-test: ## Run the host regression tests (DroneCAN wire format needs: pip install dronecan)
+	@mkdir -p $(HOST_TEST_OUT)
+	@for strict in 0 1; do \
+		$(HOST_CC) $(HOST_CFLAGS) -DCONFIG_REMOTEID_COMPLIANCE_STRICT=$$strict tests/host/store_test.c \
+			src/remoteid/remoteid/model.c src/remoteid/remoteid/encode.c src/remoteid/remoteid/auth.c \
+			$(HOST_ODID)/opendroneid.c -lm -o $(HOST_TEST_OUT)/store_test_$$strict && \
+		$(HOST_TEST_OUT)/store_test_$$strict || exit 1; \
+	done
+	@$(HOST_CC) $(HOST_CFLAGS) tests/host/selftest_test.c -o $(HOST_TEST_OUT)/selftest_test
+	@$(HOST_TEST_OUT)/selftest_test first-send && $(HOST_TEST_OUT)/selftest_test resume
+	@$(HOST_CC) $(HOST_CFLAGS) -I$(HOST_MONOCYPHER) -I$(HOST_MONOCYPHER)/optional tests/host/auth_test.c \
+		$(HOST_ODID)/opendroneid.c $(HOST_MONOCYPHER)/monocypher.c $(HOST_MONOCYPHER)/optional/monocypher-ed25519.c \
+		-lm -o $(HOST_TEST_OUT)/auth_test
+	@$(HOST_TEST_OUT)/auth_test
+	@$(HOST_CC) $(HOST_CFLAGS) tests/host/dronecan_test.c -o $(HOST_TEST_OUT)/dronecan_test
+	@if $(HOST_PYTHON) -c "import dronecan" 2>/dev/null; then \
+		$(HOST_PYTHON) tests/host/dronecan_test.py $(HOST_TEST_OUT)/dronecan_test; \
+	else \
+		echo "dronecan_test: SKIPPED (pip install dronecan)"; \
+	fi
 
 set-target: ## Configure ESP-IDF target for ESP32-S3
 	idf.py set-target esp32s3

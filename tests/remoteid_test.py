@@ -11,7 +11,7 @@ It exercises every MAVLink feature the firmware implements:
   -------------------------        --------------------------
   HEARTBEAT (sysid adoption,       HEARTBEAT (MAV_TYPE_ODID)
             takeoff capture)       OPEN_DRONE_ID_ARM_STATUS
-  SYSTEM_TIME (loop time seed)     OPEN_DRONE_ID_SYSTEM_UPDATE (fixed-operator loop)
+  SYSTEM_TIME (UTC clock seed)     OPEN_DRONE_ID_SYSTEM_UPDATE (fixed-operator loop)
   OPEN_DRONE_ID_BASIC_ID
   OPEN_DRONE_ID_OPERATOR_ID
   OPEN_DRONE_ID_SELF_ID
@@ -207,12 +207,12 @@ class Driver:
     def system_time(self):
         self.conn.mav.system_time_send(int(time.time() * 1e6), int(time.monotonic() * 1e3))
 
-    def basic_id(self):
+    def basic_id(self, uas_id=None):
         self.conn.mav.open_drone_id_basic_id_send(
             self.a.target_system, self.a.target_component, self.id_or_mac,
             mavlink.MAV_ODID_ID_TYPE_SERIAL_NUMBER,
             mavlink.MAV_ODID_UA_TYPE_HELICOPTER_OR_MULTIROTOR,
-            _bytes(self.a.uas_id, 20))
+            _bytes(uas_id if uas_id is not None else self.a.uas_id, 20))
 
     def operator_id(self):
         self.conn.mav.open_drone_id_operator_id_send(
@@ -224,14 +224,16 @@ class Driver:
             self.a.target_system, self.a.target_component, self.id_or_mac,
             mavlink.MAV_ODID_DESC_TYPE_TEXT, _bytes(self.a.self_id, 23))
 
-    def system(self, location_type):
+    def system(self, location_type, timestamp=None):
+        # timestamp: ODID-2019 seconds; pass a fixed value to mimic an autopilot
+        # relaying a cached SYSTEM packet.
         self.conn.mav.open_drone_id_system_send(
             self.a.target_system, self.a.target_component, self.id_or_mac,
             location_type, mavlink.MAV_ODID_CLASSIFICATION_TYPE_EU,
             int(self.a.operator_lat * 1e7), int(self.a.operator_lon * 1e7),
             1, 0, -1000.0, -1000.0,
             mavlink.MAV_ODID_CATEGORY_EU_OPEN, mavlink.MAV_ODID_CLASS_EU_CLASS_1,
-            float(self.a.operator_alt), odid_timestamp_now())
+            float(self.a.operator_alt), odid_timestamp_now() if timestamp is None else timestamp)
 
     def system_update(self, lat, lon, alt):
         self.conn.mav.open_drone_id_system_update_send(
@@ -442,20 +444,70 @@ def scenario_selftest(driver, monitor, args):
           bool(republished),
           "" if republished else "no self-republish - operator-location loop may be disabled")
 
-    # 5. Live operator location expires when updates stop.
+    # 5. G6: the republished SYSTEM_UPDATE timestamp reflects real UTC, proving the
+    #    shared clock was seeded from the SYSTEM_TIME we sent (not an uptime value).
+    su = monitor.snapshot()["system_update"]
+    if su is not None:
+        device_ts = su[3]                                 # ODID-2019 seconds from the device
+        expected = int(time.time()) - ODID_EPOCH_2019     # what "now" should be
+        check("republished timestamp reflects real UTC (clock seeded from SYSTEM_TIME)",
+              abs(device_ts - expected) < 60,
+              f"device={device_ts} expected~{expected} "
+              f"({'looks like uptime - clock unseeded?' if device_ts < 100000000 else 'off by >60s'})")
+
+    # 6. Live operator location expires when updates stop.
+    #    The aircraft stays fresh and the autopilot keeps relaying the last SYSTEM
+    #    with its original timestamp: only a newer source timestamp may refresh
+    #    the operator location, so it must still expire.
     def feed_live():
         driver.heartbeat()
         driver.system_time()
         driver.identity()
+        driver.location(*moving_position(args, 0))
         driver.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS)
         driver.system_update(args.operator_lat, args.operator_lon, args.operator_alt)
 
     wait_for(lambda: (monitor.snapshot()["arm_status"] or (1,))[0] == 0, 6, feed_live)
-    print("  (live operator set; stopping updates, waiting for expiry...)")
+    frozen = odid_timestamp_now()
+
+    # Let the aircraft sample go stale while still disarmed, then arm: the armed
+    # edge finds no fresh position, so no take-off point is captured, and the
+    # expiring pilot position has no fallback. (Disarmed, or with a take-off
+    # point, readiness would rightly stay good.)
+    print("  (aircraft location aging while disarmed...)")
+    for _ in range(5):
+        driver.heartbeat(armed=False)
+        driver.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS, timestamp=frozen)
+        time.sleep(1.0)
+    stale = ((monitor.snapshot()["arm_status"] or (0, ""))[1]).lower()
+    check("aircraft location reported stale before the armed edge", "fresh aircraft location" in stale,
+          f"ARM_STATUS '{stale}'")
+    driver.heartbeat(armed=True)                          # the armed edge, with no fresh position
+
+    def feed_cached_relay():
+        driver.heartbeat(armed=True)
+        driver.location(*moving_position(args, 0))
+        driver.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS, timestamp=frozen)
+
+    print("  (GCS stops, autopilot relays the cached SYSTEM, waiting for expiry...)")
     expired = wait_for(
-        lambda: (monitor.snapshot()["arm_status"] or (0,))[0] != 0, 15, lambda: None)
-    check("live operator location expires -> PRE_ARM_FAIL when updates stop", bool(expired),
-          "" if expired else "did not expire - check operator-location loop / expiry window")
+        lambda: "pilot" in ((monitor.snapshot()["arm_status"] or (0, ""))[1]).lower(), 15,
+        feed_cached_relay)
+    check("live operator location expires despite a cached SYSTEM relay", bool(expired),
+          "" if expired else "ARM_STATUS did not report 'No pilot or take-off position' - check the expiry window")
+
+    # 7. G5: a malformed CTA-2063-A serial over MAVLink. Informational (non-fatal):
+    #    a normal build keeps broadcasting it (warning only); a strict-compliance
+    #    build ignores runtime Basic IDs altogether and keeps its configured serial,
+    #    so ARM_STATUS must not change.
+    driver.basic_id("BAD-SERIAL!!")                       # not valid CTA-2063-A
+    time.sleep(2.0)
+    arm = monitor.snapshot()["arm_status"]
+    if arm and "serial" in arm[1].lower():
+        print(f"  [info] malformed serial rejected -> ARM_STATUS '{arm[1]}'")
+    else:
+        print("  [info] malformed serial not flagged (normal build warns only; "
+              "a strict build ignores runtime Basic IDs)")
 
     passed = sum(1 for _, ok, _ in results if ok)
     print(f"\n{passed}/{len(results)} checks passed.")
@@ -483,8 +535,11 @@ def main():
     p.add_argument("--target-system", type=int, default=0, help="ODID target system (0 = broadcast)")
     p.add_argument("--target-component", type=int, default=0, help="ODID target component (0 = broadcast)")
 
-    p.add_argument("--uas-id", default="PEINSER-TEST-0001", help="UAS serial number")
-    p.add_argument("--operator-id", default="BEL-OP-TEST-12345", help="operator registration ID")
+    p.add_argument("--uas-id", default="PNSR8TEST0001",
+                   help="UAS serial (valid ANSI/CTA-2063-A: 4-char mfr code + hex length + serial)")
+    p.add_argument("--operator-id", default="FIN87astrdge12k8-xyz",
+                   help="operator registration ID; EU form with the 3 secret characters "
+                        "(EASA's published example by default; strict builds require this form)")
     p.add_argument("--self-id", default="Peinser RemoteID test", help="free-text self ID")
 
     p.add_argument("--lat", type=float, default=50.8503, help="flight path center latitude")

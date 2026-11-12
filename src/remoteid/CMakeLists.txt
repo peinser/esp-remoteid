@@ -4,13 +4,16 @@ idf_component_register(
         "ota/ota.c"
         "remoteid/auth.c"
         "remoteid/ble.c"
+        "remoteid/clock.c"
         "remoteid/dronecan.c"
         "remoteid/encode.c"
+        "remoteid/input.c"
         "led/indicator.c"
         "led/lighting.c"
         "remoteid/mavlink.c"
         "remoteid/model.c"
         "led/pattern.c"
+        "remoteid/selftest.c"
         "remoteid/store.c"
         "remoteid/wifi.c"
     INCLUDE_DIRS
@@ -22,6 +25,7 @@ idf_component_register(
         app_update
         bt
         driver
+        efuse
         json
         esp_driver_gpio
         esp_driver_rmt

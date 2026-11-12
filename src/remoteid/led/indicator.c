@@ -43,7 +43,6 @@ static const char *TAG = "indicator";
 
 static rmt_channel_handle_t s_rmt_channel;
 static rmt_encoder_handle_t s_rmt_encoder;
-static _Atomic bool s_transports_started;
 static _Atomic bool s_error;
 static _Atomic bool s_ota_active;
 
@@ -121,13 +120,16 @@ static indicator_mode_t current_mode(void)
     if (atomic_load_explicit(&s_ota_active, memory_order_acquire)) {
         return INDICATOR_MODE_OTA;
     }
-    if (atomic_load_explicit(&s_error, memory_order_acquire)) {
+    remoteid_health_t health = remoteid_store_health();
+    // A rejected identity is an error for the operator to fix (EU 2019/945
+    // requires an error message when the operator ID fails its check).
+    if (atomic_load_explicit(&s_error, memory_order_acquire) || health == REMOTEID_HEALTH_SELFTEST_FAILED ||
+        health == REMOTEID_HEALTH_OPERATOR_ID_REJECTED || health == REMOTEID_HEALTH_INVALID_SERIAL) {
         return INDICATOR_MODE_ERROR;
     }
-    if (atomic_load_explicit(&s_transports_started, memory_order_acquire) && remoteid_store_is_ready()) {
-        return INDICATOR_MODE_OPERATIONAL;
-    }
-    return INDICATOR_MODE_WAITING;
+    // Operational only with identity, running transports and (for a runtime
+    // position source) fresh aircraft telemetry; anything else is waiting.
+    return health == REMOTEID_HEALTH_OK ? INDICATOR_MODE_OPERATIONAL : INDICATOR_MODE_WAITING;
 }
 
 static const led_pattern_step_t *pattern_for_mode(indicator_mode_t mode,
@@ -226,11 +228,6 @@ esp_err_t indicator_init(void)
     return ESP_OK;
 }
 
-void indicator_mark_transports_started(void)
-{
-    atomic_store_explicit(&s_transports_started, true, memory_order_release);
-}
-
 void indicator_set_ota_active(void)
 {
     atomic_store_explicit(&s_ota_active, true, memory_order_release);
@@ -246,10 +243,6 @@ void indicator_set_error(void)
 esp_err_t indicator_init(void)
 {
     return ESP_OK;
-}
-
-void indicator_mark_transports_started(void)
-{
 }
 
 void indicator_set_ota_active(void)

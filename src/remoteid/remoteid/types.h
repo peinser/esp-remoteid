@@ -12,28 +12,17 @@ typedef enum remoteid_message_index {
     REMOTEID_MESSAGE_OPERATOR_ID,
     REMOTEID_MESSAGE_SELF_ID,
     REMOTEID_MESSAGE_COUNT,
-    // Auth page indices start after base messages; not passed to encode functions.
+    // Auth page slots follow the base messages; not passed to encode functions.
     // One entry per ODID auth page (0 .. ODID_AUTH_MAX_PAGES - 1).
     REMOTEID_MESSAGE_AUTH_0 = REMOTEID_MESSAGE_COUNT,
     REMOTEID_MESSAGE_AUTH_1,
     REMOTEID_MESSAGE_AUTH_2,
     REMOTEID_MESSAGE_AUTH_3,
-    REMOTEID_MESSAGE_AUTH_4,
-    REMOTEID_MESSAGE_AUTH_5,
-    REMOTEID_MESSAGE_AUTH_6,
-    REMOTEID_MESSAGE_AUTH_7,
-    REMOTEID_MESSAGE_AUTH_8,
-    REMOTEID_MESSAGE_AUTH_9,
-    REMOTEID_MESSAGE_AUTH_10,
-    REMOTEID_MESSAGE_AUTH_11,
-    REMOTEID_MESSAGE_AUTH_12,
-    REMOTEID_MESSAGE_AUTH_13,
-    REMOTEID_MESSAGE_AUTH_14,
-    REMOTEID_MESSAGE_AUTH_15,
 } remoteid_message_index_t;
 
 typedef struct remoteid_state {
-    // Basic ID
+    // Basic ID. uas_id holds the 20 raw ID bytes plus an always-zero terminator:
+    // NUL-padded ASCII for serial / CAA IDs, binary for UUID / session IDs.
     char uas_id[ODID_ID_SIZE + 1];
     char operator_id[ODID_ID_SIZE + 1];
     ODID_idtype_t id_type;
@@ -57,8 +46,16 @@ typedef struct remoteid_state {
     ODID_Speed_accuracy_t speed_acc;
     ODID_Timestamp_accuracy_t ts_acc;
     float timestamp;                        // seconds after the UTC hour, or < 0 if unknown
+    // The last accepted Location sample with a source time stamp (seconds after
+    // the UTC hour, < 0 = none yet) and the esp_timer milliseconds when it
+    // arrived (0 = never). Freshness and sample order are judged against these.
+    float location_sample_timestamp;
+    uint32_t location_updated_ms;
 
-    // System / operator
+    // System / operator. The operator position fields hold what a source
+    // (System / SystemUpdate input, or the configured position) supplied, with
+    // its role; the store never overwrites them with a fallback. What is
+    // broadcast comes from remoteid_operator_position() below.
     bool has_operator_position;
     double operator_latitude;
     double operator_longitude;
@@ -71,24 +68,60 @@ typedef struct remoteid_state {
     ODID_classification_type_t classification_type;
     ODID_category_EU_t eu_category;
     ODID_class_EU_t eu_class;
-    // esp_timer milliseconds when the operator position was last refreshed; used
-    // to expire a live (LIVE_GNSS) operator location when GCS updates stop.
+    // Source timestamp (seconds since 2019-01-01 UTC, 0 = unknown) of the
+    // operator position, and the esp_timer milliseconds when it last advanced.
+    // A relay repeating a cached packet does not advance it, and an unknown time
+    // never does, so a live (LIVE_GNSS) position expires when its source stops.
+    uint32_t operator_position_timestamp;
     uint32_t operator_position_updated_ms;
+    // Set when a live operator position went stale. Only a newer source
+    // timestamp clears it, so a relay repeating its cached SYSTEM cannot bring
+    // the stale position back.
+    bool operator_position_expired;
+    // Take-off point captured at the last arming: broadcast when no operator
+    // position is available (EU 2019/945: "or, if not available, the take-off
+    // point"). Discarded at every arming before a new capture.
+    bool has_takeoff_position;
+    double takeoff_latitude;
+    double takeoff_longitude;
+    float takeoff_altitude_geo_m;
 
     // Self ID
     bool has_self_id;
     ODID_desctype_t self_id_type;
     char self_id_desc[ODID_STR_SIZE + 1];
 
-    // Authentication received over the input link (MAVLink/DroneCAN). When
-    // has_ext_auth is set, these pages are broadcast verbatim and supersede any
-    // locally generated signature. Pages are accumulated until 0..ext_auth_last_page
-    // have all been received.
+    // Authentication pages relayed from MAVLink (CONFIG_REMOTEID_AUTH_RELAY).
+    // Broadcast verbatim once page 0 and every page up to ext_auth_last_page
+    // belong to the same set, and only while page 0 keeps arriving.
     bool has_ext_auth;
     uint8_t ext_auth_last_page;                       // LastPageIndex from page 0
     uint16_t ext_auth_pages_received;                 // bitmask of received pages
+    uint32_t ext_auth_updated_ms;                     // esp_timer ms of the last page 0
     ODID_Auth_data ext_auth_pages[ODID_AUTH_MAX_PAGES];
 } remoteid_state_t;
+
+// The operator position to broadcast: the source's, unless it is a live one
+// that expired; otherwise the take-off point; false when there is neither.
+static inline bool remoteid_operator_position(const remoteid_state_t *state, double *latitude, double *longitude,
+                                              float *altitude_geo_m, ODID_operator_location_type_t *type)
+{
+    if (state->has_operator_position && !state->operator_position_expired) {
+        *latitude       = state->operator_latitude;
+        *longitude      = state->operator_longitude;
+        *altitude_geo_m = state->operator_altitude_geo_m;
+        *type           = state->operator_location_type;
+        return true;
+    }
+    if (state->has_takeoff_position) {
+        *latitude       = state->takeoff_latitude;
+        *longitude      = state->takeoff_longitude;
+        *altitude_geo_m = state->takeoff_altitude_geo_m;
+        *type           = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
+        return true;
+    }
+    return false;
+}
 
 typedef struct remoteid_message_bundle {
     uint8_t messages[REMOTEID_MESSAGE_COUNT][ODID_MESSAGE_SIZE];

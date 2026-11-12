@@ -3,9 +3,9 @@
 #include <string.h>
 
 #include "auth.h"
+#include "clock.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "opendroneid.h"
 
 static const char *TAG = "remoteid_encode";
@@ -20,16 +20,12 @@ static esp_err_t check_odid_encode(int rc, const char *message_name)
     return ESP_FAIL;
 }
 
-static uint32_t uptime_seconds(void)
-{
-    return (uint32_t)(esp_timer_get_time() / 1000000ULL);
-}
-
 static void fill_basic_id_data(const remoteid_state_t *state, ODID_BasicID_data *data)
 {
     data->IDType = state->id_type;
     data->UAType = state->ua_type;
-    strncpy(data->UASID, state->uas_id, sizeof(data->UASID) - 1);
+    // Raw copy: UUID and session IDs are binary and may contain NUL bytes.
+    memcpy(data->UASID, state->uas_id, ODID_ID_SIZE);
 }
 
 static void fill_location_data(const remoteid_state_t *state, ODID_Location_data *data)
@@ -38,8 +34,8 @@ static void fill_location_data(const remoteid_state_t *state, ODID_Location_data
     data->Direction       = state->direction;
     data->SpeedHorizontal = state->speed_horizontal;
     data->SpeedVertical   = state->speed_vertical;
-    data->Latitude        = state->latitude;
-    data->Longitude       = state->longitude;
+    data->Latitude        = state->has_position ? state->latitude  : 0.0;
+    data->Longitude       = state->has_position ? state->longitude : 0.0;
     data->AltitudeBaro    = state->altitude_baro_m;
     data->AltitudeGeo     = state->altitude_geo_m;
     data->HeightType      = state->height_type;
@@ -48,28 +44,40 @@ static void fill_location_data(const remoteid_state_t *state, ODID_Location_data
     data->VertAccuracy    = state->vert_acc;
     data->BaroAccuracy    = state->baro_acc;
     data->SpeedAccuracy   = state->speed_acc;
-    data->TSAccuracy      = state->ts_acc;
-    data->TimeStamp       = state->timestamp >= 0.0f
-                            ? state->timestamp
-                            : (float)(uptime_seconds() % MAX_TIMESTAMP);
+    // The time of the measurement, never the time of broadcast: a stale sample
+    // keeps its old timestamp so receivers can see its age.
+    if (state->timestamp >= 0.0f) {
+        data->TimeStamp  = state->timestamp;
+        data->TSAccuracy = state->ts_acc;
+    } else {
+        data->TimeStamp  = INV_TIMESTAMP;
+        data->TSAccuracy = ODID_TIME_ACC_UNKNOWN;
+    }
 }
 
 static void fill_system_data(const remoteid_state_t *state, ODID_System_data *data)
 {
-    data->OperatorLocationType = state->operator_location_type;
+    double latitude, longitude;
+    float altitude_geo_m;
+    ODID_operator_location_type_t type;
+    if (!remoteid_operator_position(state, &latitude, &longitude, &altitude_geo_m, &type)) {
+        latitude       = 0.0;
+        longitude      = 0.0;
+        altitude_geo_m = (float)INV_ALT;
+        type           = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
+    }
+    data->OperatorLocationType = type;
     data->ClassificationType   = state->classification_type;
-    data->OperatorLatitude     = state->has_operator_position ? state->operator_latitude  : 0.0;
-    data->OperatorLongitude    = state->has_operator_position ? state->operator_longitude : 0.0;
+    data->OperatorLatitude     = latitude;
+    data->OperatorLongitude    = longitude;
     data->AreaCount            = state->area_count;
     data->AreaRadius           = state->area_radius;
     data->AreaCeiling          = state->area_ceiling_m;
     data->AreaFloor            = state->area_floor_m;
     data->CategoryEU           = state->eu_category;
     data->ClassEU              = state->eu_class;
-    data->OperatorAltitudeGeo  = state->has_operator_position
-                                 ? state->operator_altitude_geo_m
-                                 : (float)INV_ALT;
-    data->Timestamp            = uptime_seconds();
+    data->OperatorAltitudeGeo  = altitude_geo_m;
+    data->Timestamp            = remoteid_clock_odid_2019(); // 0 until UTC is known
 }
 
 static void fill_operator_id_data(const remoteid_state_t *state, ODID_OperatorID_data *data)
@@ -169,11 +177,7 @@ esp_err_t remoteid_encode_uas_data(const remoteid_state_t *state, ODID_UAS_Data 
     uas_data->OperatorIDValid = 1;
     uas_data->SelfIDValid = 1;
 
-    // Authentication received over the input link wins; otherwise fall back to
-    // locally generated signatures (a no-op when local signing is disabled).
-    if (!remoteid_auth_apply_external_uas_data(uas_data, state)) {
-        remoteid_auth_sign_uas_data(uas_data);
-    }
+    remoteid_auth_fill_uas_data(uas_data, state);
 
     return ESP_OK;
 }
@@ -197,5 +201,17 @@ esp_err_t remoteid_encode_dynamic_message(const remoteid_state_t *state, remotei
         return build_system(state, bundle->messages[REMOTEID_MESSAGE_SYSTEM]);
     }
 
+    return ESP_OK;
+}
+
+esp_err_t remoteid_encode_validate(const remoteid_state_t *state)
+{
+    uint8_t scratch[ODID_MESSAGE_SIZE];
+
+    ESP_RETURN_ON_ERROR(build_basic_id(state, scratch), TAG, "");
+    ESP_RETURN_ON_ERROR(build_location(state, scratch), TAG, "");
+    ESP_RETURN_ON_ERROR(build_system(state, scratch), TAG, "");
+    ESP_RETURN_ON_ERROR(build_operator_id(state, scratch), TAG, "");
+    ESP_RETURN_ON_ERROR(build_self_id(state, scratch), TAG, "");
     return ESP_OK;
 }

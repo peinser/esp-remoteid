@@ -14,22 +14,27 @@ typedef enum remoteid_store_update_type {
     // Operator position only, from OPEN_DRONE_ID_SYSTEM_UPDATE. Leaves the
     // category/classification/area fields from the last full System untouched.
     REMOTEID_STORE_UPDATE_SYSTEM_UPDATE,
-    // Drop a stale live operator position. Carries no payload.
-    REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE,
+    // Self-test failed: latch a Remote ID system-failure. Carries no payload.
+    REMOTEID_STORE_UPDATE_SELFTEST_FAILED,
+    // Autopilot emergency state, derived from HEARTBEAT system_status. Latched
+    // unless CONFIG_REMOTEID_MAVLINK_EMERGENCY_LATCH is disabled.
+    REMOTEID_STORE_UPDATE_EMERGENCY,
     REMOTEID_STORE_UPDATE_SELF_ID,
     // A single received Authentication page. The store accumulates pages and
     // marks external auth ready once 0..LastPageIndex have all arrived.
     REMOTEID_STORE_UPDATE_AUTH,
-    // Snapshot the current location into the System operator position fields.
-    // Carries no payload; the store reads from its own location state atomically.
-    REMOTEID_STORE_UPDATE_TAKEOFF,
+    // Arm state of the bound autopilot (MAVLink HEARTBEAT or DroneCAN
+    // ArmingStatus), sent on change. A disarmed-to-armed transition captures
+    // the take-off point; the first state after boot only sets it, so a module
+    // that reboots in flight does not take its in-flight position.
+    REMOTEID_STORE_UPDATE_ARMED,
 } remoteid_store_update_type_t;
 
 typedef struct remoteid_store_update {
     remoteid_store_update_type_t type;
     union {
         struct {
-            char uas_id[ODID_ID_SIZE + 1];
+            char uas_id[ODID_ID_SIZE + 1]; // 20 raw bytes, see remoteid_state_t
             ODID_idtype_t id_type;
             ODID_uatype_t ua_type;
         } basic_id;
@@ -61,7 +66,7 @@ typedef struct remoteid_store_update {
             ODID_Vertical_accuracy_t baro_acc;
             ODID_Speed_accuracy_t speed_acc;
             ODID_Timestamp_accuracy_t ts_acc;
-            float timestamp;
+            float timestamp;                // seconds after the UTC hour, < 0 if unknown
         } location;
         struct {
             bool has_operator_position;
@@ -76,18 +81,56 @@ typedef struct remoteid_store_update {
             ODID_classification_type_t classification_type;
             ODID_category_EU_t eu_category;
             ODID_class_EU_t eu_class;
+            uint32_t timestamp;             // source time, seconds since 2019-01-01 UTC
         } system;
         struct {
             bool has_operator_position;
             double operator_latitude;
             double operator_longitude;
             float operator_altitude_geo_m;
+            uint32_t timestamp;             // source time, seconds since 2019-01-01 UTC
         } system_update;
+        struct {
+            bool active;
+        } emergency;
+        struct {
+            bool armed;
+        } armed;
     } data;
 } remoteid_store_update_t;
+
+// Why the device is (not) ready to broadcast / arm. Lets callers surface the
+// specific reason (e.g. an invalid serial) instead of a generic "not ready".
+typedef enum remoteid_health {
+    REMOTEID_HEALTH_OK = 0,
+    REMOTEID_HEALTH_WAITING_BASIC_ID,
+    REMOTEID_HEALTH_WAITING_OPERATOR_ID,
+    REMOTEID_HEALTH_INVALID_SERIAL,
+    REMOTEID_HEALTH_SELFTEST_FAILED,
+    // Transports not started yet, or a transport/runtime fault not yet latched.
+    REMOTEID_HEALTH_TRANSPORTS_NOT_RUNNING,
+    // A runtime position source is configured but no fresh Location arrived.
+    REMOTEID_HEALTH_LOCATION_STALE,
+    // An operator ID failed the consistency check (EU 2019/945: the operator
+    // gets an error message). Cleared by the next valid operator ID.
+    REMOTEID_HEALTH_OPERATOR_ID_REJECTED,
+    // Strict mode: the fresh Location lacks mandatory data (position, height,
+    // time stamp, ground speed, or course while moving).
+    REMOTEID_HEALTH_LOCATION_INCOMPLETE,
+    // Neither a pilot position nor a take-off point can be broadcast, and none
+    // will be captured (armed, or arm state unknown). EU 2019/945 Part 6(3)(v).
+    REMOTEID_HEALTH_NO_PILOT_POSITION,
+} remoteid_health_t;
 
 esp_err_t remoteid_store_start(const remoteid_state_t *initial_state);
 esp_err_t remoteid_store_submit(const remoteid_store_update_t *update, TickType_t timeout);
 esp_err_t remoteid_store_get_snapshot(remoteid_state_t *out);
 esp_err_t remoteid_store_wait_ready(TickType_t timeout);
 bool remoteid_store_is_ready(void);
+
+// Current readiness health (the reason behind remoteid_store_is_ready()).
+remoteid_health_t remoteid_store_health(void);
+
+// Pre-arm failure text reported to the autopilot (OPEN_DRONE_ID_ARM_STATUS /
+// dronecan.remoteid.ArmStatus); "" when the health is OK.
+const char *remoteid_store_health_text(remoteid_health_t health);

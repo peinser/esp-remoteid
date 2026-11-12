@@ -426,6 +426,12 @@ static esp_err_t start_ota_ap(void)
     ap_config.ap.channel      = CONFIG_REMOTEID_OTA_AP_CHANNEL;
     ap_config.ap.max_connection = 4;
 
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT
+    // The management server can rewrite NVS and roll back firmware; in strict
+    // mode it is never reachable over an open access point.
+    _Static_assert(sizeof(CONFIG_REMOTEID_OTA_AP_PASSWORD) > 8,
+                   "strict compliance mode needs an OTA AP password of at least 8 characters (WPA2)");
+#endif
     size_t pass_len = strlen(CONFIG_REMOTEID_OTA_AP_PASSWORD);
     if (pass_len >= 8) {
         strlcpy((char *)ap_config.ap.password, CONFIG_REMOTEID_OTA_AP_PASSWORD,

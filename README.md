@@ -1,4 +1,4 @@
-ESP32-S3 Remote ID add-on module firmware targeting EU UAS Regulation compliance, built on ESP-IDF and OpenDroneID.
+ESP32-S3 Remote ID add-on module firmware that implements the EU direct remote identification requirements, built on ESP-IDF and OpenDroneID. Conformity of a product built on it is not yet established; see [Conformity status](#conformity-status).
 
 The firmware broadcasts the four mandatory message types required by EU Commission Delegated Regulation (EU) 2019/945 and implementing Regulation (EU) 2021/664, encoded per ASTM F3411-22a (OpenDroneID): Basic ID, Location/Vector, System, and Operator ID. Transmission supports Bluetooth LE legacy advertising and Wi-Fi Beacon advertisements. Payload encoding uses the official [`opendroneid-core-c`](https://github.com/opendroneid/opendroneid-core-c) library, included as a git submodule.
 
@@ -34,25 +34,126 @@ make menuconfig
 
 and navigate to **ESP Remote ID**. The sections below explain what each option means and which values are legally required.
 
-> **Note:** The firmware is protocol-compliant with ASTM F3411 and the EU UAS Regulation (EU) 2019/945 / 2021/664 broadcast requirements. Whether your specific operation is legal depends on your national CAA rules, aircraft registration, and operating category. This firmware does not substitute for regulatory advice.
+> **Note:** The firmware implements the ASTM F3411 / EN 4709-002 message formats and the Regulation (EU) 2019/945 broadcast requirements as far as they can be checked in code and host tests; [Conformity status](#conformity-status) lists what is still to be shown. Whether your specific operation is legal depends on your national CAA rules, aircraft registration, and operating category. This firmware does not substitute for regulatory advice.
 
 ### Required: UAS ID and Operator ID
 
 | Option | Description |
 |--------|-------------|
-| **UAS ID** | Unique identifier for the aircraft, broadcast in the Basic ID message. Max 20 characters. |
-| **Operator registration ID** | Your national pilot/operator registration number (e.g. an EASA number like `FIN87ASTRDGE12K8`), broadcast in the Operator ID message. Max 20 characters. |
+| **UAS ID** | The ANSI/CTA-2063-A serial number of the Remote ID system, broadcast in the Basic ID message. Max 20 characters. Set in Kconfig in a normal build; a strict build reads it from eFuse instead (see [Serial number provisioning](#serial-number-provisioning-strict-mode)). |
+| **Operator registration ID** | Your national operator registration number. For an EU number enter the full form with its 3 secret characters, e.g. `FIN87astrdge12k8-xyz`. Max 20 characters. |
 
-Set both to your actual registration values before any flight. The placeholder defaults (`CHANGE_ME_*`) are not valid for operation and intentionally block all broadcasts until replaced or overridden by valid MAVLink OpenDroneID input.
+Set both to your actual values before any flight. The placeholder defaults (`CHANGE_ME_*`) are not valid for operation and intentionally block all broadcasts until replaced or overridden by valid MAVLink or DroneCAN input.
+
+**EU operator registration number.** The number has 16 public characters (3-letter country code, 12 characters, 1 check character) and 3 secret characters that only the operator knows. Enter all 20 as `<16 public>-<3 secret>`, in Kconfig or from the ground station. The firmware verifies the check character against the secret part and then drops the secret: only the 16 public characters are stored and broadcast. A wrong secret or a typo is rejected, and the module stays not-ready.
 
 ### UAS ID type
 
-| Drone type | Correct setting |
-|------------|-----------------|
-| Self-built, no manufacturer serial | **CAA Registration ID** use your national operator registration number as the UAS ID |
-| Has a manufacturer serial (ANSI/CTA-2063-A) | **Serial Number** |
+In the EU the UAS ID is always the serial number: Regulation (EU) 2019/945 (Part 6 of the Annex) requires the Remote ID system to broadcast its own ANSI/CTA-2063-A serial number for an add-on module, or the serial number of the aircraft when the system is built in. The serial has the form `<4-character manufacturer code><length character 1-F><serial>`, using digits and upper-case letters without `O` and `I`, e.g. `1ABC5XYZ12`. The manufacturer code is issued by the ICAO through CTA.
 
-For most self-built drones the UAS ID and Operator ID will be the same string: your national operator registration number. For Belgium, you can find your CAA Registration ID in the portal of "Directoraat Generaal Luchtvaart" after obtaining the necessary licenses.
+Outside strict compliance mode the serial is set in Kconfig (**UAS ID**), and the ID type can also be set to **CAA Registration ID** for testing or for jurisdictions that accept a registration number as the UAS ID. That is not an EU-compliant configuration.
+
+#### Serial number provisioning (strict mode)
+
+EN 4709-002 requires the serial number to be loaded at the factory, protected from modification afterwards and stored in secure memory. A strict build therefore reads it from the ESP32-S3 eFuse user data block (`BLOCK_USR_DATA`), not from Kconfig. eFuses are one-time programmable: once the block is write-protected, neither firmware nor a reflash can change the serial. One signed firmware image then serves every unit.
+
+Provision each unit once at production, before it is sealed. **Burning eFuses is irreversible**: check the serial before running the commands.
+
+```sh
+# The block is 32 bytes: the serial (NUL-padded ASCII, at most 20 characters), then zeros.
+python3 -c "import sys; s=sys.argv[1].encode(); open('serial.bin','wb').write(s + bytes(32 - len(s)))" 1ABC5XYZ12
+espefuse.py --chip esp32s3 --port /dev/ttyUSB0 burn_block_data BLOCK_USR_DATA serial.bin
+espefuse.py --chip esp32s3 --port /dev/ttyUSB0 write_protect_efuse BLOCK_USR_DATA
+```
+
+Burn the data before write-protecting: the write protection locks the block in whatever state it is in. The commands were checked with `espefuse.py --virt`; the block then reads `31 41 42 43 35 58 59 5a 31 32 00 ...` ("1ABC5XYZ12") and a second burn is refused. The same block also holds the optional custom MAC address (bytes 25 to 30), which stays unset.
+
+At boot the firmware logs an error when the block is empty (the module then stays not-ready, "UAS ID not set") and a warning when it is not write-protected.
+
+### Strict EU (EASA) compliance mode
+
+`Strict EU (EASA) compliance mode` enforces the EU rules at runtime instead of only warning. It needs a live position source (MAVLink or DroneCAN input).
+
+| Rule | Normal build | Strict build |
+|------|--------------|--------------|
+| UAS ID | Any ID type, set in Kconfig; Basic ID from MAVLink/DroneCAN replaces it | The serial number from the write-protected eFuse block (see [Serial number provisioning](#serial-number-provisioning-strict-mode)); Basic ID from MAVLink/DroneCAN is ignored, so the serial cannot be changed in operation or by reflashing |
+| Malformed CTA-2063-A serial | Logged as a warning, still broadcast | Never broadcast; not-ready, error indicator, `Invalid UAS serial (CTA-2063-A)` reported to the autopilot |
+| Operator ID | 16-character ID accepted unverified; a 20-character `-xyz` form is verified and stripped | Only the 20-character form, verified and stripped |
+| UA type | Configured, or from Basic ID input | Configured at build time |
+| Aircraft Location (MAVLink) | From any sender on the link that describes this aircraft | Only from the bound autopilot; a ground station or companion cannot set the aircraft position |
+| Ready to arm | Fresh Location (runtime position source) and a pilot position or take-off point | In addition, the Location carries a position, height, time stamp, ground speed and, when moving faster than 0.5 m/s, a course ("Incomplete aircraft location data" otherwise) |
+| Fixed configured position | Available for bench tests | Not available |
+| Start-up delay | Configurable (default 10 s) | None: a module that reboots in flight resumes broadcasting at once |
+| OTA server | Optional | Only with Secure Boot (signed images) and a WPA2 password of at least 8 characters; the build fails otherwise |
+| Transports | Any | At least one of BLE 5 Long Range, Wi-Fi Beacon or Wi-Fi NAN, the broadcast methods EN 4709-002 requires; the build fails otherwise. BLE 4 legacy stays recommended alongside, for phones without those receivers |
+
+In both modes an operator ID that fails the consistency check is reported until a valid one is uploaded (see [EU compliance mapping](#eu-compliance-mapping)).
+
+With the runtime identity source, a strict build still takes the operator ID and the System data (operator location, category, class) from the flight controller or ground station; only the serial and UA type are fixed.
+
+The serial cannot be changed by reflashing, because it lives in eFuse. The rest of the behaviour (aircraft position only from the autopilot, the checks above) is firmware, so a production device still needs Secure Boot and flash encryption (see [Flash encryption](#flash-encryption)); a strict build without both logs a warning at every boot.
+
+### EU compliance mapping
+
+How the firmware addresses the requirements for a direct remote identification add-on, Regulation (EU) 2019/945 Annex Part 6, checked against the consolidated version of 24 June 2025 (Part 6 is as amended by Regulation (EU) 2020/1058; later amendments did not change it). Classes C1 to C3 (Parts 2 to 4) have the same data list plus an indication of the emergency status.
+
+| Requirement | Implementation |
+|-------------|----------------|
+| (1) Upload of the operator registration number, consistency check of the full string, error message on inconsistency | Operator ID from Kconfig, MAVLink or DroneCAN. The 20-character form is checked (Luhn mod 36 over the public and secret characters). A failure is reported to the autopilot as `Operator ID failed consistency check` (`ARM_STATUS` / `ArmStatus`, which ArduPilot shows as a pre-arm failure and forwards to the ground station) and on the status indicator, until a valid number is uploaded. |
+| (2) Unique ANSI/CTA-2063-A serial number, affixed legibly to the add-on and to its packaging or its manufacturer's instructions | Strict mode: serial burned into write-protected eFuse at production and validated at boot. Labelling is a manufacturing step. |
+| (3) Real-time periodic broadcast during the whole flight, open and documented protocol, receivable by existing mobile devices | ASTM F3411-22a / EN 4709-002 messages over Bluetooth 4 legacy advertising (default), Bluetooth 5 Long Range (Message Packs), Wi-Fi Beacon and Wi-Fi NAN; strict mode requires one of the last three. Location and System at least every second, the other messages at least every 3 s. Transmit failures latch a Remote ID system failure (broadcast status, arming blocked), and so does an enabled transport that does not send within 5 s of the identity becoming usable or of its previous transmission. Good to arm is only reported once every enabled transport has transmitted. |
+| (3)(i) Operator registration number and verification code, unless the check failed | Operator ID message: the 16 public characters, the last being the check character; the 3 secret characters are never broadcast. A number that fails the check is never broadcast. |
+| (3)(ii) Serial number | Basic ID message, ID type serial number. |
+| (3)(iii) Time stamp, position, height above the surface or take-off point | Location message from the autopilot, with its time stamp and height reference. A Location only counts as fresh when its source time stamp moves forward from the last accepted sample (see [Aircraft location freshness](#aircraft-location-freshness)), so a relay repeating a cached sample is reported stale. Strict mode only reports ready to arm when all three are present. |
+| (3)(iv) Course from true north and ground speed | Location direction and horizontal speed. Strict mode requires a known ground speed, and a known course above 0.5 m/s, before it reports ready to arm. |
+| (3)(v) Position of the remote pilot or, if not available, the take-off point | System message. The pilot position comes from the ground station. The take-off point is captured when the bound autopilot arms (MAVLink `HEARTBEAT`, DroneCAN `ArmingStatus`) and used when no pilot position is available, including when a live pilot position stops updating. Every input reports "No pilot or take-off position" when neither is available, except while the autopilot is known to be disarmed (the take-off point is captured at arming, so requiring it earlier would deadlock). |
+| Emergency status (C1 to C3) | Location status, from the autopilot or derived from its `HEARTBEAT`. |
+| (4) Reduce the ability to tamper | Strict mode: serial in write-protected eFuse, aircraft position only from the autopilot, OTA only with Secure Boot and WPA2, no fixed position. Secure Boot and flash encryption are required for production units. |
+| (5) Manufacturer's instructions: transmission protocol, installation, upload of the operator number | This README covers the protocol and setup. A product's user manual has to state them for the end user. |
+
+#### Legislation and standards checked
+
+Reviewed on 12 November 2026. Recheck when one of these acts or standards is amended.
+
+| Act | Version checked | Scope of the check |
+|-----|-----------------|--------------------|
+| Commission Delegated Regulation (EU) 2019/945 | [Consolidated version of 24 June 2025](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:02019R0945-20250624) (CELEX 02019R0945-20250624) | Annex Part 6, the requirements for a direct remote identification add-on, in full. This is the basis of the table above. |
+| Commission Delegated Regulation (EU) 2020/1058 | As incorporated in 2019/945 | Set the current Part 6 and the direct remote identification points of Parts 2 to 4 (classes C1 to C3). Parts 2 to 4 were checked in the 2020 text only, not in the 2025 consolidation. |
+| Commission Delegated Regulation (EU) 2024/1108 | [OJ L, 23.5.2024](https://eur-lex.europa.eu/eli/reg_del/2024/1108/oj) | Its amendments to 2019/945, in full: the UAS definitions, certification under Article 40, and the low-battery warning for classes C1 to C3. None of them changes the remote identification requirements. |
+| Commission Implementing Decision (EU) 2024/2103 | [OJ](https://eur-lex.europa.eu/eli/2024/2103/oj) | Cites EN 4709-002:2023 as the harmonised standard for direct remote identification, **except** for Part 6 point (3) (and the matching C1 to C3 points): following the standard gives no presumption that the broadcast can be received by existing mobile devices. That has to be shown separately, with reception tests on current Android and iOS phones. |
+| EN 4709-002 (ASD-STAN) | Public sample of the draft [prEN 4709-002:2020](https://cdn.standards.iteh.ai/samples/72429/8978669bde974fc48fe89f87dba203f9/oSIST-prEN-4709-002-2021.pdf) (clauses 1 to 4.6) and ASD-STAN's [introduction to the standard](https://cms.stan-shop.org/uploads/2024/01/ASD-STAN_DRI_Introduction_to_the_European_digital_RID_UAS_Standard.pdf) | Not the final EN 4709-002:2023 text, which is paywalled: see the findings below. |
+
+EN 4709-002 findings from those sources, to confirm against the final text:
+
+| Topic | Draft / ASD-STAN text | Firmware |
+|-------|-----------------------|----------|
+| Mandatory messages | Basic ID, Location, System, Operator ID and Message Pack mandatory; Self ID optional; emergency status not required for an add-on | All sent. BLE 5 and Wi-Fi carry Message Packs |
+| Broadcast methods | BLE 5 Long Range, Wi-Fi NAN (2.4 GHz) or Wi-Fi Beacon: at least one is mandatory. BLE 4 legacy advertising is optional | Strict mode requires one of the three; BLE 4 recommended alongside |
+| Update rates | Location at least every 1 s, static messages at least every 3 s | Met on every transport |
+| Data age | The dynamic fields of the Location message no older than 1 s | **Depends on the source.** ArduPilot sends Location at a fixed 1 Hz (not configurable), so the broadcast data can be just over 1 s old just before the next sample. Meeting this with margin needs a source at 2 Hz or more |
+| Operator number upload | Full 20-character string, Luhn mod 36 check, invalid numbers refused, only the public part stored and broadcast; country code upper case, the rest lower case | Implemented; upper-case input is normalised to lower case. For an add-on the standard asks for a "specific application" to enter and check the number: here that is the ground station plus the module's error report, which may need a dedicated tool for a product |
+| Serial number | Loaded at the factory, not modifiable afterwards, stored in a secure memory area; shown by design documentation | Strict mode: write-protected eFuse |
+| Tampering with position data | Explicitly outside the standard's scope | Strict mode still takes the aircraft position only from the autopilot |
+| Output power and directivity | As high as national limits allow; omni-directional | Maximum power by default (BLE +9 dBm, Wi-Fi 20 dBm). Antenna placement is an installation matter |
+| Add-on definition | "A standalone Direct Remote ID broadcast device integrating a GNSS function, a barometric function, a communication function" | **Gap.** This module has no GNSS or barometer; it relays the autopilot's data. As an add-on under this definition it would need its own GNSS and barometer, or it has to be placed on the market as part of the aircraft's remote ID system |
+
+Not covered by this check:
+
+- **EN 4709-002:2023**, final text, including clause 5 (transports, power, test procedures) and clause 6 (test methods).
+- **ASTM F3411-22a**, the message format. Messages are encoded with the reference library [`opendroneid-core-c`](https://github.com/opendroneid/opendroneid-core-c); the standard text itself has not been reviewed.
+- **Commission Implementing Regulation (EU) 2019/947**, Article 14, which sets the operator registration. The check-character algorithm follows EASA's published operator number scheme and is verified against EASA's example number.
+- **[EASA Opinion No 06/2026](https://www.easa.europa.eu/en/document-library/opinions/opinion-no-062026)**, a proposal to update 2019/945 and 2019/947. It is not law yet and has not been reviewed.
+
+#### Conformity status
+
+The code and the host tests show the behaviour described above. Conformity of a product also needs evidence that this repository does not provide yet:
+
+- **EN 4709-002:2023** reviewed clause by clause (the findings above come from draft-era sources).
+- **Radio measurements on hardware**: sample-to-air age of the Location data, the actual message rates per transport, transmit power and directivity.
+- **Reception and range** with current Android and iOS phones, per transport (EN 4709-002 gives no presumption of conformity for this).
+- **Failure behaviour on hardware**: reboot in flight, loss of the autopilot link, loss of the pilot position stream.
+- **Source contract**: the aircraft position source must deliver new Location samples with correct UTC timestamps. The module rejects repeated, backward and alternating samples but cannot detect an absolute age error or a replayed cycle of five or more old samples, because its clock is not always independent of the source (see the clock provenance in [Operator-location freshness loop](#operator-location-freshness-loop)). ArduPilot's fixed 1 Hz rate is marginal against the 1-second data-age rule.
+- **Product evidence**: per-unit serial provisioning (eFuse), Secure Boot and flash encryption, the serial marking on the module and packaging, and the user manual (transmission protocol, installation, operator number upload).
 
 ### UA type
 
@@ -87,9 +188,9 @@ The messages are populated with the ASTM F3411 invalid sentinel values:
 
 This is protocol-compliant. The broadcast system is active and all four message types are transmitted; receivers will decode the messages and display the UAS ID while showing the position as unknown.
 
-**Known takeoff position (`Broadcast a known takeoff position` = enabled)**
+**Known takeoff position (`Broadcast a known takeoff position` = enabled; not available in strict compliance mode)**
 
-Enable this option and enter the takeoff coordinates. The firmware latches these values at compile time and broadcasts them as the UA and operator position (EU regulation permits using the takeoff location as the operator location for add-on modules).
+Enable this option and enter the takeoff coordinates. The firmware latches these values at compile time and broadcasts them as the UA and operator position (EU regulation permits using the takeoff location as the operator location for add-on modules). The configured altitude is geodetic (WGS-84), so the barometric altitude is broadcast as unknown. A fixed UA position does not follow the aircraft in flight; use it for bench testing, not as a substitute for live position input.
 
 | Option | Format | Example |
 |--------|--------|---------|
@@ -103,26 +204,26 @@ Obtain the WGS-84 altitude from a GNSS receiver or an online tool such as [https
 
 BLE 4 legacy is enabled by default. All other transports are disabled by default so receiver testing can isolate one transport at a time. BLE 4 legacy and BLE 5 Long Range can run simultaneously; each is an independent task on the same NimBLE host.
 
-> **Regulatory note on BLE 5 Long Range:** EU regulation 2019/945 only recognises BLE 4 legacy advertising and Wi-Fi Beacon as approved DRI transports. BLE 5 Extended Advertising is defined in ASTM F3411-22a (referenced by FAA 14 CFR Part 89) but is not listed in the EU delegated regulation. A BLE 5 only configuration is therefore not compliant in the EU. BLE 5 is disabled by default for this reason.
+> **Regulatory note on BLE 5 Long Range:** Regulation (EU) 2019/945 does not list transports. It requires a broadcast over "an open and documented transmission protocol" that "can be received directly by existing mobile devices". Most phones cannot receive LE Coded PHY, so never use BLE 5 Long Range on its own in the EU: keep BLE 4 legacy advertising (or Wi-Fi) enabled alongside it. BLE 5 is disabled by default.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `Enable Bluetooth LE legacy advertisements` | Enabled | Broadcasts OpenDroneID messages using BLE 4 legacy advertising on service UUID `0xFFFA`. Supported by all current receiver apps. |
-| `Enable Bluetooth 5 Long Range (LE Coded PHY)` | Disabled | Broadcasts OpenDroneID messages using BLE 5 extended advertising with LE Coded PHY (S=8). Increases range significantly at the cost of a lower air data rate. Can run alongside BLE 4 legacy. Disabled by default: not an approved transport under EU 2019/945. Valid under ASTM F3411-22a (FAA). Most current receiver apps do not yet support BLE 5. |
-| `BLE advertisement rotation interval` | `250 ms` | BLE payload rotation cadence for both BLE transports. Default keeps Location refreshed around 1 Hz while also rotating Basic ID, System, and Operator ID. |
+| `Enable Bluetooth 5 Long Range (LE Coded PHY)` | Disabled | Broadcasts OpenDroneID Message Packs (all messages in one advertisement, every slot interval) using BLE 5 extended advertising with LE Coded PHY (S=8). Increases range significantly at the cost of a lower air data rate. Can run alongside BLE 4 legacy. One of the broadcast methods EN 4709-002 requires; many phones, iPhones included, cannot receive it. Needs `CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=251` (the default here). |
+| `BLE advertisement rotation interval` | `250 ms` | BLE payload rotation cadence for both BLE transports (100 to 260 ms). Location and System are sent every third slot (every 750 ms at the default); Basic ID, Operator ID and Self ID once per 9-slot cycle, with the authentication pages spread between them. The 260 ms maximum keeps Location and System within 1 s and every other message within 3 s (see [BLE schedule with authentication](#ble-schedule-with-authentication)). |
 | `Enable Wi-Fi Beacon advertisements` | Disabled | Broadcasts OpenDroneID Message Pack payloads in Wi-Fi Beacon vendor IEs. |
 | `Enable Wi-Fi NAN advertisements` | Disabled | Broadcasts OpenDroneID Message Pack payloads in Wi-Fi NAN sync/action frames. |
 | `Wi-Fi Remote ID channel` | `6` | 2.4 GHz channel used by the ESP32-S3 Wi-Fi transport. |
 | `Wi-Fi TX power` | `20 dBm` | Converted internally to ESP-IDF quarter-dBm units. |
 | `Wi-Fi Beacon SSID` | `OpenDroneID` | SSID embedded only in Beacon frames. Receivers should parse the vendor IE, not rely on this SSID. |
-| `Wi-Fi Beacon TX interval` | `1000 ms` | Wi-Fi Beacon transmission cadence. |
-| `Wi-Fi NAN TX interval` | `1000 ms` | Wi-Fi NAN sync/action transmission cadence. |
+| `Wi-Fi Beacon TX interval` | `1000 ms` | Wi-Fi Beacon transmission cadence (100 to 1000 ms, fixed rate). Every frame carries the full message pack. |
+| `Wi-Fi NAN TX interval` | `1000 ms` | Wi-Fi NAN sync/action transmission cadence (100 to 1000 ms, fixed rate). |
 | `Enable onboard RGB status indicator` | Disabled | Drives a board-mounted addressable RGB LED as a local status indicator. |
 | `Onboard RGB LED data GPIO` | `48` | Physical ESP32-S3 GPIO connected to the onboard WS2812/SK6812-style RGB LED data input. The UICPAL ESP32-S3-N16R8 board variant used by this firmware uses GPIO48; other variants may use GPIO33 or another pin. |
 | `Onboard RGB LED brightness` | `16%` | Scales the local indicator LED brightness. |
 | `Onboard RGB operational flash pattern` | `Drone beacon 1 Hz short flash` | Pattern used after transports have started and valid Remote ID identity is available. |
 | `Enable external GPIO lighting outputs` | Disabled | Enables up to five simple GPIO outputs for external light trigger circuits. |
-| `Startup delay before transmissions` | `10000 ms` | Development delay before starting BLE/Wi-Fi so there is time to attach the serial monitor. |
+| `Startup delay before transmissions` | `10000 ms` | Development delay before starting BLE/Wi-Fi so there is time to attach the serial monitor. Not available in strict compliance mode (no delay). |
 
 ### Onboard RGB Indicator
 
@@ -136,7 +237,7 @@ Status behavior:
 | Operational | Configured green flash pattern |
 | Error state | Red fast blink |
 
-Operational means the firmware has started its enabled transports and the state store has a valid Basic ID/UAS ID plus Operator ID. This prevents the indicator from showing the operational pattern while placeholder identity values are still blocking broadcasts.
+Operational means the same as `GOOD_TO_ARM`: a valid Basic ID/UAS ID and Operator ID, all enabled transports running without a reported fault and, when the position comes from MAVLink or DroneCAN, a new, in-order Location sample with a source time stamp within the last 3 s, plus a pilot position or take-off point (or a disarmed autopilot that will provide one at arming). Anything else shows the waiting pattern. A latched Remote ID system failure, an operator ID that failed its consistency check, or an invalid serial shows the error pattern.
 
 The RGB data pin is not a suitable transistor trigger for external lights because addressable LEDs use a high-speed encoded data waveform. Use the external GPIO lighting outputs for that purpose.
 
@@ -189,9 +290,27 @@ MAVLink input is available but disabled by default. When enabled, the firmware l
 - `OPEN_DRONE_ID_AUTHENTICATION`
 - `OPEN_DRONE_ID_MESSAGE_PACK`
 
-It also watches `HEARTBEAT` to capture the takeoff position when an autopilot first arms.
+It also watches `HEARTBEAT` and `SYSTEM_TIME` from the autopilot. The module binds to the first `HEARTBEAT` from an autopilot component (`MAV_COMP_ID_AUTOPILOT1`) of the configured target system, or of any system when none is configured, and never re-binds. Arm state (takeoff capture, emergency status) and the UTC clock are taken only from that autopilot; a GCS or companion `SYSTEM_TIME` is ignored. The arm state is unknown until the first `HEARTBEAT`, so a module that reboots while the vehicle is armed does not capture its in-flight position as the takeoff point.
 
-`OPEN_DRONE_ID_MESSAGE_PACK` is unpacked and each contained OpenDroneID message is applied as if it had arrived on its own, so a flight controller can deliver the full set in a single frame. Authentication pages received over the link are reassembled and broadcast verbatim, superseding any locally generated Ed25519 signature. Both transports carry all authentication pages; the BLE advertising schedule reserves a slot per page and skips any that are unpopulated without holding an empty advertising interval.
+Only data about this aircraft is accepted. A message with a non-zero `id_or_mac`, or one sent by an Open Drone ID transmitter/receiver component (`236`-`238`), describes another aircraft seen by a Remote ID receiver and is ignored, including inside `OPEN_DRONE_ID_MESSAGE_PACK`. A `0/0` target alone does not make a message about this aircraft.
+
+Every input path (MAVLink messages, message packs, DroneCAN, Kconfig) goes through the same validation before it changes the broadcast state:
+
+- The UAS ID must match its ID type. Serial number and CAA registration IDs are printable ASCII; UTM UUIDs and specific session IDs are binary and stored byte for byte, including NUL bytes. ID type `None`, reserved types and empty IDs are rejected and never replace a valid identity.
+- A full EU operator registration number entered with its secret part (`FIN87astrdge12k8-xyz`) is checksum-verified (Luhn mod 36), and only the 16 public characters are stored and broadcast. A wrong secret part is rejected. In strict compliance mode only this form is accepted, and Basic ID input is ignored (see [Strict EU (EASA) compliance mode](#strict-eu-easa-compliance-mode)).
+- An update that the OpenDroneID encoder cannot represent (out-of-range enum, coordinate, speed or authentication page) is rejected as a whole instead of stopping the broadcast.
+
+#### Aircraft location freshness
+
+Part 6(3) requires real-time data, so the module only counts a Location as fresh when it is a new measurement, judged by the source's time stamp (seconds after the UTC hour), never by its arrival:
+
+- **Unknown time** (`0xFFFF`, as ArduPilot sends without a 3D GPS fix): the position is still broadcast, with an unknown time stamp, but it is never stamped with its arrival time and the location is not fresh from that sample on: freshness always belongs to the coordinates currently held, so an earlier timed sample cannot vouch for them. The take-off point is therefore never captured from an untimed sample.
+- **In order**: a timed sample must be ahead of the last accepted one, across the rollover at the full hour, and by no more than the local time elapsed between them plus 5 s. A repeated sample (a relay's cache), one behind the last accepted one, or alternating old samples are ignored whole: they change neither the broadcast data nor the order reference.
+- **Time steps**: five consecutive ignored samples that move forward among themselves are taken as the source's clock having stepped back, and its new time is followed. A repeated or alternating replay never forms such a run; a relay replaying a cycle of five or more old samples cannot be told apart without an independent clock.
+
+Ready to arm requires a fresh Location (accepted within the last 3 s).
+
+`OPEN_DRONE_ID_MESSAGE_PACK` is unpacked and each contained OpenDroneID message is applied as if it had arrived on its own, so a flight controller can deliver the full set in a single frame. Authentication pages (`OPEN_DRONE_ID_AUTHENTICATION`, or inside a message pack) are used only when the authentication source is **Relay from MAVLink**; see [Authentication](#authentication).
 
 Incoming Basic ID and Operator ID updates feed the same readiness gate as Kconfig values. This allows a flight controller or companion computer to provide identity at runtime while keeping the placeholder Kconfig values in flash. Broadcasts still do not start until a valid Basic ID/UAS ID and Operator ID are present.
 
@@ -207,9 +326,8 @@ Flight controllers do not send the `OPEN_DRONE_ID_*` messages by default; OpenDr
 | `DID_MAVPORT` | Serial port index that carries the OpenDroneID MAVLink stream to this module (`-1` for none). |
 | `DID_CANDRIVER` | DroneCAN driver index, if the module is on CAN instead of serial. |
 | `DID_OPTIONS` | Bitmask; among other things it can require a healthy Remote ID module before arming (see arm gating below). |
-| `DID_RATE_HZ` | Rate at which the dynamic messages (Location/System) are sent. |
 
-With `DID_ENABLE=1`, ArduPilot sends Basic ID, Location, System, Operator ID, Self ID, and (when configured) Authentication, usually bundled in `OPEN_DRONE_ID_MESSAGE_PACK`. It also expects the module to talk back; see the status output section.
+With `DID_ENABLE=1`, ArduPilot sends Location and System (operator location) at a fixed 1 Hz, and Basic ID, Self ID, Operator ID and System in rotation, as individual `OPEN_DRONE_ID_*` messages. Operator ID, Self ID, System and the operator location come from the ground station; Basic ID from the ground station or the `DID_UAS_ID` parameters. ArduPilot does not create Authentication messages: a ground station's `OPEN_DRONE_ID_AUTHENTICATION` reaches the module through ArduPilot's MAVLink routing. ArduPilot also expects the module to talk back; see the status output section.
 
 **PX4.** Build with the `remote_id` module included and enable it with `UXRCE`-independent parameter `RID_ENABLE = 1` (PX4's OpenDroneID driver). PX4 streams the same `OPEN_DRONE_ID_*` MAVLink messages on the configured MAVLink instance; ensure the serial port's MAVLink mode forwards the OpenDroneID stream. PX4 support is less mature than ArduPilot's and may require a recent main build; consult the PX4 OpenDroneID docs for your version.
 
@@ -217,7 +335,7 @@ Either way, this module consumes the standard messages once they are flowing; no
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `Enable MAVLink OpenDroneID UART input` | Disabled | Enables the MAVLink parser and state producer. |
+| `Enable MAVLink OpenDroneID input` | Disabled | Enables the MAVLink parser and state producer. |
 | `MAVLink transport` | `UART` | Physical link: `UART`, or `USB Serial/JTAG` (native USB device) for a companion computer. |
 | `MAVLink UART number` | `1` | ESP32-S3 UART peripheral used for input (UART transport only). This does not imply physical pins. |
 | `MAVLink UART baud rate` | `57600` | UART baud rate. Common values are `57600`, `115200`, and `921600`. |
@@ -231,14 +349,14 @@ Either way, this module consumes the standard messages once they are flowing; no
 | `Status output rate (Hz)` | `1` | HEARTBEAT and ARM_STATUS transmit rate. |
 | `Own the operator-location freshness loop` | Disabled | Aircraft-local operator-location ownership (see below). Requires the TX GPIO. |
 | `Fixed operator-location republish period (ms)` | `2000` | SYSTEM_UPDATE cadence for a fixed operator location (0.5 Hz). |
-| `Live operator-location expiry (ms)` | `10000` | Drop a live operator location if no GCS refresh arrives within this window. |
+| `Live operator-location expiry (ms)` | `10000` | A live operator location whose source timestamp has not advanced within this window is replaced by the take-off point, or dropped when there is none. Applies to MAVLink and DroneCAN input. |
 
 #### Status output and arm gating
 
 When `Send HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS` is enabled, the module periodically transmits two messages back to the flight controller (this requires bidirectional UART wiring, i.e. the TX GPIO connected to the flight controller's RX):
 
 - `HEARTBEAT` with component type `MAV_TYPE_ODID`, so the flight controller and ground station see the Remote ID module as a live component of the vehicle.
-- `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` once a usable identity is present and broadcasts have started, or `PRE_ARM_FAIL_GENERIC` with an error string otherwise.
+- `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` only when a usable identity is present, all enabled transports are running without a reported fault, (for a MAVLink/DroneCAN position source) a new, in-order Location sample with a source time stamp arrived within the last 3 s, and a pilot position or take-off point is available or will be captured at arming. In strict compliance mode that Location must also carry a position, height, time stamp, ground speed and, when moving, a course. Otherwise `PRE_ARM_FAIL_GENERIC` with the reason (for example "No fresh aircraft location", "Operator ID failed consistency check" or "Remote ID transmitters not running").
 
 This is what lets ArduPilot treat the module as present and healthy. With the relevant `DID_OPTIONS` bit set, ArduPilot refuses to arm until it receives `GOOD_TO_ARM`, so the drone cannot take off without a working Remote ID broadcast. The module shares the flight controller's system ID (adopted automatically by default) and uses an Open Drone ID component ID, so the status appears as part of the same vehicle.
 
@@ -251,11 +369,13 @@ The mode is derived from the `operator_location_type` carried in the last full `
 | Operator-location type | Firmware behaviour |
 |------------------------|--------------------|
 | `FIXED` / `TAKEOFF` | The firmware **republishes** `OPEN_DRONE_ID_SYSTEM_UPDATE` (broadcast `target=0/0`) at the configured period (0.5 Hz default), with the fixed position and a fresh timestamp, so the autopilot stays compliant even after the GCS disconnects. |
-| `LIVE_GNSS` | The firmware **only consumes** the GCS's live `SYSTEM_UPDATE` stream and **never republishes** it (re-stamping a moving position would falsify freshness). If updates stop for longer than the expiry window, the operator location is dropped as stale. |
+| `LIVE_GNSS` | The firmware **only consumes** the GCS's live `SYSTEM_UPDATE` stream and **never republishes** it (re-stamping a moving position would falsify freshness). Freshness follows the source `timestamp` carried in `SYSTEM`/`SYSTEM_UPDATE`: only a newer timestamp counts as a refresh, so an autopilot that keeps relaying the last cached packet does not keep the location alive. A timestamp of 0 (unknown time) never counts, so a live position needs a real source timestamp. A position with an older timestamp than the stored one is out of order and ignored. If no newer timestamp arrives within the expiry window (`Live operator-location expiry`, checked at least every second even when all input stops), the firmware broadcasts the take-off point instead, or no operator position when none was captured; the stale position is not republished. The stored live position keeps its role, and only a newer timestamp (in `SYSTEM` or `SYSTEM_UPDATE`) brings it back, so the relayed cache cannot flip it back and forth and a second loss expires it again. A full `SYSTEM` that switches the role to `FIXED` or `TAKEOFF` is accepted even with timestamp 0, since those positions need no freshness; a `SYSTEM_UPDATE` carries no role and continues the live one. |
 
-When stale or absent, the operator location is reported via `ARM_STATUS` (`PRE_ARM_FAIL_GENERIC`, "Operator location missing or stale") — this requires status output to also be enabled — and operator position is dropped from the BLE/Wi-Fi broadcast.
+When neither a pilot position nor a take-off point is available, `ARM_STATUS` reports "No pilot or take-off position" (this is part of the shared readiness, the same over DroneCAN).
 
-The republish timestamp (a Unix-2019 epoch) is seeded from the autopilot's `SYSTEM_TIME` message; until a valid `SYSTEM_TIME` has been seen, the loop holds off transmitting. The feature requires an outbound MAVLink path (the TX GPIO on the UART transport; inherent on USB Serial/JTAG) and is only available when MAVLink input is enabled.
+The republish timestamp (a Unix-2019 epoch) comes from the shared UTC clock, seeded from the bound autopilot's `SYSTEM_TIME`; until a valid `SYSTEM_TIME` has been seen, the loop holds off transmitting. Clock provenance differs per input: over MAVLink only the bound autopilot's `SYSTEM_TIME` (normally GPS time) sets it, over DroneCAN it is seeded once from the `System` timestamp, which ArduPilot forwards from the ground station (see [DroneCAN (ArduPilot)](#dronecan-ardupilot)). A GPS-derived clock is therefore not guaranteed on every path. Once seeded, the clock runs on the ESP32 crystal. The same clock stamps the broadcast System and Authentication messages. Without it those timestamps are sent as 0 and a Location without a source timestamp as unknown (`0xFFFF`); uptime is never broadcast as UTC.
+
+On arm the take-off point of the previous flight is discarded, and the current position is recorded as the new take-off point when the Location is fresh. It is broadcast as the `TAKEOFF` operator location whenever no source pilot position is available; a supplied pilot position is never overwritten. A `SYSTEM` without an operator position (latitude and longitude 0, as ArduPilot sends before the ground station provides one) does not erase it, and one with an undeclared classification does not replace the configured EU category and class. The feature requires an outbound MAVLink path (the TX GPIO on the UART transport; inherent on USB Serial/JTAG) and is only available when MAVLink input is enabled.
 
 #### Transport: UART or USB
 
@@ -297,53 +417,52 @@ AllowMsgIdIn = 0,12918
 
 Message IDs: `0` HEARTBEAT, `2` SYSTEM_TIME, `12900` BASIC_ID, `12901` LOCATION, `12902` AUTHENTICATION, `12903` SELF_ID, `12904` SYSTEM, `12905` OPERATOR_ID, `12915` MESSAGE_PACK, `12918` ARM_STATUS (ESP output), `12919` SYSTEM_UPDATE. Drop `2` and `12919` if the operator-location loop is not used, and drop `0` only if you do not need takeoff-position capture or system-ID adoption.
 
-### DroneCAN Input
+### DroneCAN (ArduPilot)
 
-DroneCAN input development has started and is disabled by default. This targets the DroneCAN protocol used by ArduPilot and PX4 DroneCAN peripherals and flight-controller buses. DroneCAN is the maintained UAVCAN v0-derived protocol; it is distinct from OpenCyphal/UAVCAN v1. The current milestone brings up the ESP32-S3 TWAI/CAN controller, receives DroneCAN extended CAN frames, reassembles supported multi-frame transfers, and decodes `uavcan.equipment.gnss.Fix2` plus a project-specific Remote ID identity message into the Remote ID state.
+DroneCAN is disabled by default. When enabled, the module joins the CAN bus as a DroneCAN node and implements the CAN side of ArduPilot's OpenDroneID support (`DID_CANDRIVER`), with the standard `dronecan.remoteid` messages. DroneCAN is the maintained UAVCAN v0-derived protocol; it is distinct from OpenCyphal/UAVCAN v1. The implementation uses ESP-IDF's built-in TWAI driver and needs no extra library.
 
-No extra git submodule is required for this first milestone; it uses ESP-IDF's built-in TWAI driver. A later milestone that decodes DroneCAN DSDL cleanly may add a small UAVCAN/DroneCAN support library or generated DSDL sources, but that should be decided when the target flight-controller messages are confirmed.
+| Direction | DroneCAN message | Data type ID | Rate | Purpose |
+|-----------|------------------|--------------|------|---------|
+| ArduPilot to module | `dronecan.remoteid.BasicID` | `20030` | static rotation | UAS ID, ID type, UA type (ignored in strict mode) |
+| ArduPilot to module | `dronecan.remoteid.Location` | `20031` | 1 Hz | Aircraft position, speeds, status, timestamp |
+| ArduPilot to module | `dronecan.remoteid.SelfID` | `20032` | static rotation | Self ID |
+| ArduPilot to module | `dronecan.remoteid.System` | `20033` | 1 Hz | Operator location, area, EU category/class, timestamp |
+| ArduPilot to module | `dronecan.remoteid.OperatorID` | `20034` | static rotation | Operator ID |
+| ArduPilot to module | `uavcan.equipment.safety.ArmingStatus` | `1100` | 2 Hz | Arm state, for the take-off point capture |
+| Module to ArduPilot | `dronecan.remoteid.ArmStatus` | `20035` | 1 Hz | `GOOD_TO_ARM` or the pre-arm failure text, same as the MAVLink `ARM_STATUS` |
+| Module to bus | `uavcan.protocol.NodeStatus` | `341` | 1 Hz | Node presence. Health is `CRITICAL` after a self-test failure, `OK` otherwise; mode is `OPERATIONAL` |
+| Module to requester | `uavcan.protocol.GetNodeInfo` response | `1` (service) | on request | Name `com.peinser.remoteid`, unique ID from the ESP32 MAC |
+
+These messages carry the MAVLink `OPEN_DRONE_ID_*` fields with the same units, so both inputs share one conversion and the same validation (see [MAVLink OpenDroneID Input](#mavlink-opendroneid-input)). `dronecan.remoteid.SecureCommand` (`64`) is not implemented, and DroneCAN has no Authentication message.
+
+Rules applied to DroneCAN input:
+
+- The module binds to the first node that sends a `dronecan.remoteid` message (the autopilot) and ignores Remote ID data from every other node.
+- A message with a non-empty `id_or_mac` describes another aircraft and is ignored.
+- Multi-frame transfers are checked against their transfer CRC; anonymous (node ID 0) transfers are ignored.
+- The UTC clock is seeded once from the first non-zero `System.timestamp`. ArduPilot sends no other UTC time over DroneCAN, and this value comes from the ground station, in whole seconds. Location timestamps come from ArduPilot's GPS time and are used as sent.
+- The take-off point is captured from `uavcan.equipment.safety.ArmingStatus` (`1100`), which ArduPilot broadcasts at 2 Hz on every DroneCAN bus: the bound node's disarmed-to-armed transition captures it, like the MAVLink `HEARTBEAT`.
+
+#### ArduPilot setup
+
+1. Build or download ArduPilot firmware with the OpenDroneID feature (many boards need a build from the [custom firmware build server](https://custom.ardupilot.org/)).
+2. Set `CAN_P1_DRIVER = 1` (or the port the module is on) and `CAN_D1_PROTOCOL = 1` (DroneCAN), and match the bitrate (`CAN_P1_BITRATE`, 1 Mbit/s by default).
+3. Set `DID_ENABLE = 1`, `DID_CANDRIVER = 1` (the DroneCAN driver of that bus) and `DID_MAVPORT = -1`.
+4. To block arming without a healthy Remote ID module, enable the pre-arm option in `DID_OPTIONS`. ArduPilot then requires an `ArmStatus` within the last 3 s reporting `GOOD_TO_ARM`, a Basic ID with an ID type, and an operator location.
+5. Supply the Operator ID, Self ID and operator location from the ground station, as for the MAVLink connection. In strict mode ArduPilot's own pre-arm check still wants a Basic ID: set the `DID_UAS_ID` parameters to the module's serial so the two agree.
+
+The module's node ID is static (`DroneCAN node ID`, default `100`). It must be unique on the bus; ArduPilot's node allocation server accepts static IDs.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `Enable DroneCAN input` | Disabled | Starts the DroneCAN/TWAI receive task. |
-| `DroneCAN RX GPIO` | `-1` | ESP32-S3 GPIO connected to the CAN transceiver RXD output. Must be configured when DroneCAN is enabled. |
-| `DroneCAN TX GPIO` | `-1` | ESP32-S3 GPIO connected to the CAN transceiver TXD input. Must be configured because the TWAI peripheral owns both pins, even in listen-only mode. |
-| `DroneCAN bitrate` | `1 Mbit/s` | CAN bus bitrate. Common DroneCAN setups use `1 Mbit/s`; match the flight controller bus. |
-| `Local DroneCAN node ID` | `0` | Reserved for future active participation. Current implementation receives only and does not publish DroneCAN transfers. |
-| `Accept anonymous DroneCAN transfers` | Enabled | Allows source node ID `0` message transfers. |
-| `Use CAN listen-only mode` | Disabled | Sniffs the bus without ACKing frames. Leave disabled for normal FC-to-ESP operation. |
-| `Remote ID identity DroneCAN data type ID` | `20000` | Vendor-specific DroneCAN data type ID for the custom Remote ID identity message. Publisher and receiver must match. |
+| `Enable DroneCAN (ArduPilot OpenDroneID over CAN)` | Disabled | Starts the DroneCAN node. |
+| `DroneCAN RX GPIO` | `-1` | ESP32-S3 GPIO connected to the CAN transceiver RXD output. Must be configured. |
+| `DroneCAN TX GPIO` | `-1` | ESP32-S3 GPIO connected to the CAN transceiver TXD input. Must be configured. |
+| `DroneCAN bitrate` | `1 Mbit/s` | CAN bus bitrate. Match the flight controller bus. |
+| `DroneCAN node ID` | `100` | Static node ID, 1 to 125, unique on the bus. |
+| `DroneCAN task stack size` | `4096` | Stack of the receive/transmit task. |
 
-Currently decoded messages:
-
-| DroneCAN message | Data type ID | Remote ID fields updated |
-|------------------|--------------|--------------------------|
-| `uavcan.equipment.gnss.Fix2` | `1063` | Latitude, longitude, altitude, horizontal speed, vertical speed, track direction, fix status, and coarse accuracy flags. |
-| `com.peinser.remoteid.Identity` | `20000` by default | Basic ID UAS ID/type, UA type, and Operator ID. |
-
-The firmware also recognizes `uavcan.protocol.NodeStatus` (`341`) and `uavcan.equipment.gnss.Fix` (`1060`) in logs, but `Fix2` and the custom identity message are the messages that update Remote ID state in this milestone.
-
-#### Custom Remote ID Identity Message
-
-ArduPilot/PX4 DroneCAN does not define a standard Remote ID identity message equivalent to MAVLink `OPEN_DRONE_ID_BASIC_ID` and `OPEN_DRONE_ID_OPERATOR_ID`. This firmware therefore supports a project-specific DroneCAN message for publishers that you control.
-
-Use this DSDL definition and configure its data type ID to match `REMOTEID_DRONECAN_REMOTEID_IDENTITY_DTID`. A suitable file path for a publisher DSDL tree is `com/peinser/remoteid/20000.Identity.uavcan`:
-
-```text
-# com.peinser.remoteid.Identity
-# Default data type ID used by this firmware: 20000
-
-uint8 id_type        # ASTM/OpenDroneID ODID_idtype_t value
-uint8 ua_type        # ASTM/OpenDroneID ODID_uatype_t value
-uint8[20] uas_id     # Null-padded ASCII, max 20 bytes
-uint8[20] operator_id # Null-padded ASCII, max 20 bytes
-```
-
-The message is intentionally fixed-size so small publisher implementations do not need dynamic array serialization. If the text fields are shorter than 20 bytes, pad the remaining bytes with zero. If they are exactly 20 bytes, omit the null terminator.
-
-ArduPilot/PX4 will not emit this message by default. A publisher must be added through flight-controller firmware changes, scripting support, or a companion node on the same DroneCAN bus.
-
-By default the ESP32 TWAI controller runs in normal CAN mode. It does not transmit DroneCAN application messages, but it does acknowledge received CAN frames at the bus level. This matters on a two-node bus with only the flight controller and ESP module: without an ACKing receiver, the flight controller will treat its CAN transmissions as failed. Enable listen-only mode only when sniffing an already healthy bus with at least one other ACKing node.
+The module transmits on the bus (NodeStatus, ArmStatus, GetNodeInfo responses) and acknowledges frames, so it also works on a two-node bus with only the flight controller.
 
 Basic wiring with an external 3.3 V-compatible CAN transceiver:
 
@@ -382,21 +501,25 @@ Termination rules:
 - With power off, a correctly terminated bus normally measures about 60 ohm between `CANH` and `CANL` because the two 120 ohm terminators are in parallel.
 - Keep the ESP transceiver stub short. If possible, place it on the trunk rather than at the end of a long branch.
 
-For Android app testing, use one transport at a time because many receiver apps do not display whether a detected aircraft came from BLE or Wi-Fi.
-
 ### Minimum configuration checklist
 
-Before flashing for any actual operation:
+Before flashing for any actual operation in the EU:
 
-- [ ] Set **UAS ID** to your aircraft identifier (operator registration number for self-builds)
-- [ ] Set **Operator registration ID** to your national CAA/EASA pilot registration number
-- [ ] Set **UAS ID type** to **CAA Registration ID** (unless you have a CTA-2063-A serial)
+- [ ] Enable **Strict EU (EASA) compliance mode**
+- [ ] Burn and write-protect the ANSI/CTA-2063-A serial number in eFuse (see [Serial number provisioning](#serial-number-provisioning-strict-mode))
 - [ ] Set **UA type** to match your airframe
+- [ ] Provide the **Operator registration ID** in its full form with the 3 secret characters, in Kconfig (static identity) or from the ground station (runtime identity)
 - [ ] Leave **EU equipment class** as **Undeclared** if your drone has no CE class label
 - [ ] Set **EU operation category** to **Open** (or your authorised category)
-- [ ] Optionally enable **Broadcast a known takeoff position** and enter your takeoff coordinates
+- [ ] Connect a live position source (MAVLink or DroneCAN); a fixed takeoff position is for bench testing only
+- [ ] Enable Secure Boot and flash encryption, and keep OTA disabled or protected (see [Strict EU (EASA) compliance mode](#strict-eu-easa-compliance-mode))
+- [ ] On the autopilot, enable the Remote ID pre-arm check (ArduPilot `DID_OPTIONS`) and the module's status output, so the aircraft cannot take off without a working broadcast
+- [ ] Enable Wi-Fi Beacon (or BLE 5 Long Range / Wi-Fi NAN) for EN 4709-002, and keep BLE 4 legacy advertising enabled (receivable by phones)
+- [ ] Run and document reception tests with current Android and iOS phones (EN 4709-002 gives no presumption of conformity for this)
 
 Note: BLE and Wi-Fi transports wait for the store readiness gate before transmitting. The gate requires a usable Basic ID/UAS ID and Operator ID, either from Kconfig or from runtime producers such as MAVLink.
+
+For Android app testing, use one transport at a time because many receiver apps do not display whether a detected aircraft came from BLE or Wi-Fi.
 
 ## Prerequisites
 
@@ -431,6 +554,19 @@ The default ESP serial device inside the container is `/dev/ttyESP32`. Override 
 ```sh
 make flash ESPPORT=/dev/ttyACM0
 ```
+
+### Host regression tests
+
+`make host-test` compiles the firmware logic for the host against stub ESP-IDF headers (`tests/host/stub`) and runs the regression tests in `tests/host`; no hardware or ESP-IDF is needed:
+
+| Test | Covers |
+|------|--------|
+| `store_test.c` (built in normal and strict mode) | Identity validation (EU operator number check, CTA-2063-A serial, ID types), the operator ID error, pilot position and take-off fallback (expiry, role changes, timestamp rules, arming), aircraft location freshness and sample order (cached replay, unknown time, alternating and cyclic old samples, the hour rollover, long gaps, clock steps), take-off capture only from fresh timed coordinates, strict completeness and readiness. Linked with the real encoder and OpenDroneID core, so every accepted update is also checked for encodability |
+| `selftest_test.c` | Transmit deadlines: a transport that never sends, and one that hangs after a pause |
+| `auth_test.c` | Local Ed25519 signing: the signature from the broadcast pages verifies over the message set and the page 0 timestamp, and fails for another timestamp |
+| `dronecan_test.c` / `.py` | DroneCAN wire format in both directions against the reference `pydronecan` package (skipped when it is not installed: `pip install dronecan`) |
+
+The hardware test against a flashed module is `tests/remoteid_test.py`.
 
 ## Transmit Power
 
@@ -503,20 +639,39 @@ The screenshot below shows the OpenDroneID Android app receiving live advertisem
   <img src=".github/images/android-opendroneid.png" width="300" alt="OpenDroneID Android app showing one detected drone with Basic ID, Location (no position), System, and Operator ID messages">
 </p>
 
-## Authentication (F3411-22a Ed25519)
+## Authentication
 
-The firmware supports ASTM F3411-22a message set authentication using Ed25519 signatures. When enabled, the four-message set (BasicID + Location + System + OperatorID) is signed on every broadcast cycle and the 64-byte signature is broadcast across four authentication pages.
+The broadcast can carry ASTM F3411-22a Authentication pages. They come from exactly one source, chosen under **ESP Remote ID → Authentication → Authentication message source**, so pages of two signatures are never mixed:
 
-### How it works
+| Source | Default | Signing key | What is broadcast |
+|--------|---------|-------------|-------------------|
+| **Relay from MAVLink** | Yes, when MAVLink input is enabled | With the ground station or autopilot | The pages received in `OPEN_DRONE_ID_AUTHENTICATION` or a message pack, byte for byte |
+| **None** | When MAVLink input is disabled | None | No Authentication pages |
+| **Local Ed25519** | No | On this module (Kconfig or NVS) | A message set signature made by this module |
 
-Each broadcast cycle the firmware:
+Both transports carry all pages: Wi-Fi in every message pack, BLE in the slots described in [BLE schedule with authentication](#ble-schedule-with-authentication). Skipped pages take no advertising time.
 
-1. Encodes the four base ODID messages into their 25-byte wire format (100 bytes total)
-2. Signs those bytes with the configured Ed25519 private key
-3. Distributes the 64-byte signature across four authentication pages (page 0: 17 bytes + metadata, pages 1–3: 23/23/1 bytes)
-4. Broadcasts the auth pages alongside the base messages
+### Relay from MAVLink
 
-Receivers that have the corresponding public key can verify the signature over the message set they received.
+The module stores the pages of one set: a different page 0 starts a new set and drops the pages of the previous one. A set is broadcast once page 0 and every page up to its `last_page_index` have arrived, and is dropped when page 0 has not been received for 10 s, so a signer that stops is not left on air. Up to 4 pages (64 bytes in page 0 to 3) are supported; larger sets are rejected. DroneCAN has no Authentication message.
+
+Pages 1 and up carry no set identifier in the OpenDroneID protocol, and the module does not hold the signer's key. A late page of a previous set that arrives after a new page 0 therefore cannot be told apart from a page of the new set; only a receiver that verifies the signature can detect it. Signers should send all pages of a set together, page 0 first. Local signing does not have this limitation.
+
+The pages go out exactly as the signer produced them. Whether a receiver can verify them depends on what was signed:
+
+- **UAS ID, Operator ID, Network Remote ID and specific-method signatures** cover data this module broadcasts unchanged (the Basic ID is copied byte for byte; the Operator ID is the 16 public characters). They verify as relayed.
+- **A message set signature** covers encoded messages. This module re-encodes every message from its own state, adds its own timestamps and schedules Location on its own, so the signature only verifies if the signer signs exactly the messages this module broadcasts. For a verifiable message set signature, use local signing.
+
+### Local Ed25519
+
+The module signs the message set itself, so the signed bytes are the broadcast bytes. For each signature it:
+
+1. Takes the five ODID messages as last broadcast, in the order Basic ID, Location, System, Operator ID, Self ID, each in its 25-byte wire format (125 bytes)
+2. Appends the page 0 timestamp, seconds since 2019-01-01 UTC as a 4-byte little-endian integer (129 bytes in total)
+3. Signs those bytes with the Ed25519 private key
+4. Distributes the 64-byte signature across four authentication pages (page 0: 17 bytes + metadata, pages 1 to 3: 23/23/1 bytes), authentication type message set signature
+
+Because the timestamp is signed, a recorded signature cannot be rebroadcast under a fresh timestamp. A verifier rebuilds the same 129 bytes from the received messages and the page 0 timestamp, and checks the signature with the device's public key.
 
 ### PKI and CA-signed certificates
 
@@ -539,7 +694,7 @@ The firmware only needs the private key. The certificate lives in your registry.
 
 ### Assumptions and limitations
 
-- **No real-time clock.** The timestamp in auth page 0 is seconds since boot, not UTC. This satisfies the wire format but limits anti-replay protection. A GPS or NTP time source would provide a meaningful timestamp.
+- **Clock.** The timestamp in auth page 0 is seconds since 2019-01-01 UTC from the shared clock, seeded by the autopilot's `SYSTEM_TIME` (MAVLink) or the first `System.timestamp` (DroneCAN). Until then it is 0, and a signed timestamp of 0 gives a verifier nothing to judge freshness by.
 - **Private key security.** The key is only as safe as the flash it lives in. Without flash encryption the raw key bytes are readable directly off the chip. See [Flash encryption](#flash-encryption) below.
 
 ### Key generation
@@ -579,7 +734,7 @@ The firmware looks for the private key in this order:
 1. **Compiled-in**: `REMOTEID_AUTH_PRIVATE_KEY_PEM` in Kconfig/sdkconfig. Used during development; takes priority when set.
 2. **NVS**: NVS namespace `remoteid_auth`, key `private_key`. Used in production; the flash encryption hardware protects it at rest.
 
-If neither source has a key the firmware aborts at startup with an error log.
+With local signing selected, if neither source has a valid key, the firmware logs an error, reports a Remote ID system failure (broadcast status, `ARM_STATUS` and the error indicator) and keeps broadcasting unsigned.
 
 ### Development configuration
 
@@ -589,21 +744,14 @@ Format the private key for Kconfig (one line, `\n` as separator):
 awk 'NF {printf "%s\\n", $0}' device.pem
 ```
 
-Enable authentication and set the key in `menuconfig` under **ESP Remote ID → Authentication**, or set directly in `sdkconfig`:
+Select **Local Ed25519** and set the key in `menuconfig` under **ESP Remote ID → Authentication**, or set directly in `sdkconfig`:
 
 ```
 CONFIG_REMOTEID_AUTH_ED25519=y
 CONFIG_REMOTEID_AUTH_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYD...\n-----END PRIVATE KEY-----\n"
 ```
 
-A dummy key and placeholder identity are provided in `sdkconfig.dev` for local development without a real CA:
-
-```sh
-export SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.dev"
-idf.py build
-```
-
-Never flash `sdkconfig.dev` credentials to a production device.
+For local development, generate your own key as shown above and keep it, and any `sdkconfig` that contains it, out of version control. Never use a development key on a production device.
 
 ### Production configuration (NVS provisioning)
 
@@ -892,53 +1040,28 @@ The first flash writes the firmware to `ota_0`. Subsequent OTA updates alternate
 ### OTA security notes
 
 - The HTTP server has no authentication beyond the Wi-Fi AP password. Use a strong WPA2 passphrase in any environment with untrusted wireless neighbours.
+- Without Secure Boot, `POST /update` installs any image, including one with a different UAS serial. For an EU-compliant device enable Secure Boot (OTA images must then be signed) or leave the OTA server out of production builds.
 - OTA mode is only active while triggered. Normal Remote ID operation resumes after every reboot without the trigger asserted.
 - When flash encryption Release mode is active, the OTA server is the only way to update firmware or provisioned secrets after the device is sealed.
 - The AP MAC address is randomised on every OTA boot to avoid persistent device identification while in management mode.
 
 ### BLE schedule with authentication
 
-When authentication is enabled the BLE schedule extends from 8 to 12 slots (3 seconds per full cycle at 250 ms per slot). Auth pages 0–3 are appended after the base message rotation. The Location and System messages are refreshed immediately before signing so auth pages always cover the most recent state.
+BLE 5 Long Range sends the whole message set, authentication pages included, as one Message Pack every slot interval; a local signature covers exactly the messages in that pack.
 
-## Web Configurator (Cloudbuild)
+BLE 4 legacy advertising sends one message per slot in a 9-slot rotation, with the authentication pages (100 ms each) spread between the slots:
 
-A web-based firmware configurator allows users to configure and build the firmware without installing the ESP-IDF toolchain. The user fills in a form (UAS ID, operator ID, transports, position, etc.), and the backend generates a `sdkconfig` overlay, triggers a GitHub Actions build, and returns a ready-to-flash firmware ZIP.
-
-Because the repository is public, GitHub Actions build minutes are free and unlimited.
-
-### Architecture
-
-```
-Browser (web form)
-    │  POST /build { uas_id, operator_id, transports, ... }
-    ▼
-Cloudbuild server (.dev/cloudbuild/)
-    │  1. Validate inputs
-    │  2. Render sdkconfig overlay
-    │  3. Base64-encode overlay
-    │  4. Generate correlation UUID (build_id)
-    │  5. POST /actions/workflows/cloudbuild.yml/dispatches
-    │     via GitHub API with { build-id, sdkconfig-overlay-b64 }
-    │  6. Return { build_id }
-    ▼
-Browser polls GET /build/{build_id}/status
-    │
-    ▼
-Cloudbuild server
-    → lists GitHub Actions runs for cloudbuild.yml
-    → matches run by name (run-name: cloudbuild-{build_id})
-    → returns { status, conclusion, download_url? }
-    │
-    ▼ (completed + success)
-Browser GET /build/{build_id}/download
-    → server proxies artifact ZIP from GitHub (token never reaches browser)
+```text
+Location  System  Basic ID     [auth 0]
+Location  System  Operator ID  [auth 1]
+Location  System  Self ID      [auth 2] [auth 3]
 ```
 
-The `run-name: cloudbuild-{build_id}` field on the workflow is what ties a dispatch to a specific poll without needing to store server-side state.
+With the slot interval T (250 ms by default, at most 260 ms), Location and System are sent at least every 3T + 200 ms (980 ms at the maximum), and every other message and the full authentication set every 9T + 400 ms (2.74 s). A local signature is made at the page 0 slot over the most recently broadcast copy of each message; Location and System are not re-encoded for signing, because their timestamps would then differ from what receivers saw. Pages 1 to 3 of that signature follow later in the same cycle.
 
-### Reusable action
+## Reusable build workflow
 
-The GitHub Actions build logic is extracted into a reusable workflow at [`.dev/actions/`](.dev/actions/). Publish that directory's contents into the `peinser/actions` repository and tag it `v1`. Any other ESP-IDF project can then use it:
+The GitHub Actions build logic is a reusable workflow in [`.dev/actions/`](.dev/actions/), meant to be published as the `peinser/actions` repository (see [`.dev/actions/README.md`](.dev/actions/README.md)). Any ESP-IDF project can then call it:
 
 ```yaml
 jobs:
@@ -951,71 +1074,6 @@ jobs:
       contents: read
 ```
 
-### Self-hosting the configurator backend
-
-The cloudbuild server is a Node.js 22 service at [`.dev/cloudbuild/`](.dev/cloudbuild/). It requires a GitHub fine-grained PAT with `actions: write` and `actions: read` on this repository.
-
-```sh
-cp .dev/cloudbuild/.env.example .dev/cloudbuild/.env
-# Edit .env: set GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO
-docker compose -f .dev/cloudbuild/docker-compose.yml up -d
-```
-
-Point `ALLOWED_ORIGIN` at your web configurator frontend's origin. Put the service behind a reverse proxy (nginx, Caddy) for TLS before exposing it publicly.
-
-For local development without Docker:
-
-```sh
-cd .dev/cloudbuild
-cp .env.example .env   # fill in GITHUB_TOKEN
-npm install
-npm run dev            # runs on http://localhost:3000
-```
-
-### Publishing the reusable action
-
-```sh
-# Copy the contents of .dev/actions/ into the peinser/actions repository, then:
-git tag v1
-git push origin main v1
-```
-
-The cloudbuild.yml workflow in this repository references `peinser/actions/.github/workflows/esp-remoteid-build.yml@v1`. Create and tag that repository before triggering any cloudbuild dispatch.
-
-### API reference
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/healthz` | GET | Health check; returns `{"ok":true}` |
-| `/build` | POST | Submit a build request; returns `{"build_id":"..."}` |
-| `/build/:id/status` | GET | Poll build status; returns `{status, conclusion, run_url, download_url?}` |
-| `/build/:id/download` | GET | Download firmware ZIP (proxied from GitHub) |
-
-**POST /build request body:**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `uas_id` | string | Yes | UAS ID, max 20 characters |
-| `operator_id` | string | Yes | Operator registration ID, max 20 characters |
-| `id_type` | string | Yes | `caa_reg` or `serial` |
-| `ua_type` | string | Yes | `multirotor`, `aeroplane`, `hybrid_lift`, or `other` |
-| `eu_category` | string | Yes | `undeclared`, `open`, `specific`, or `certified` |
-| `eu_class` | string | Yes | `undeclared`, `c0` through `c6` |
-| `transport_ble` | boolean | Yes | Enable BLE 4 legacy advertising |
-| `transport_ble5` | boolean | Yes | Enable BLE 5 Long Range |
-| `transport_wifi_beacon` | boolean | Yes | Enable Wi-Fi Beacon |
-| `transport_wifi_nan` | boolean | Yes | Enable Wi-Fi NAN |
-| `ble_tx_power` | string | No | `n12`, `n9`, `n6`, `n3`, `n0`, `p3`, `p6`, or `p9` |
-| `ble_tx_interval_ms` | number | No | 100-5000 ms, default 250 |
-| `has_position` | boolean | No | Broadcast a known takeoff position |
-| `takeoff_lat_1e6` | number | If `has_position` | Latitude degrees x 10^6 |
-| `takeoff_lon_1e6` | number | If `has_position` | Longitude degrees x 10^6 |
-| `takeoff_alt_m` | number | If `has_position` | Altitude above WGS-84 ellipsoid in metres |
-| `startup_delay_ms` | number | No | 0-60000 ms, defaults to 0 for cloudbuild |
-| `ota_enable` | boolean | No | Include OTA update server |
-| `ota_trigger_gpio` | number | No | GPIO for OTA trigger button (-1 to 48) |
-
 ## TODO
 
-- [ ] DroneCAN inputs and state processing.
 - [ ] Signed OTA, validate firmware binaries against stored public keys before flashing.
