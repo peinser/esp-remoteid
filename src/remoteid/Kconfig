@@ -365,10 +365,12 @@ config REMOTEID_OPERATOR_LOCATION_EXPIRY_MS
     range 1000 60000
     help
         A live (LIVE_GNSS) operator location whose source timestamp has not
-        advanced within this window is stale. It is then replaced by the
-        take-off point captured at arming (EU 2019/945: the position of the
-        remote pilot or, if not available, the take-off point), or dropped
-        when there is none. Only a newer source timestamp restores it.
+        advanced within this window is stale; an unknown timestamp (0) never
+        counts as an advance. The take-off point captured at arming is then
+        broadcast instead (EU 2019/945: the position of the remote pilot or,
+        if not available, the take-off point), or no operator position when
+        there is none. Only a newer source timestamp restores it. Checked at
+        least every second, also when all input has stopped.
 
 config REMOTEID_DRONECAN_INPUT
     bool "Enable DroneCAN (ArduPilot OpenDroneID over CAN)"

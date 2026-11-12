@@ -40,6 +40,7 @@
 
 #define REMOTEID_STORE_READY_BIT BIT0
 #define REMOTEID_STORE_QUEUE_LEN 8
+#define REMOTEID_STORE_TICK_MS   1000
 
 static const char *TAG = "remoteid_store";
 
@@ -290,56 +291,46 @@ static bool location_is_complete_locked(void)
 // Age the operator position by its source timestamp, not by receipt: only a
 // newer source timestamp counts as a refresh, so an autopilot that keeps
 // relaying a cached SYSTEM / SYSTEM_UPDATE cannot keep a live location fresh.
-// A source without time (timestamp 0) can only be aged by receipt.
+// An unknown time (0) is never evidence of a fresh measurement: a live position
+// without a source timestamp expires.
 static void refresh_operator_position_age_locked(uint32_t source_timestamp)
 {
-    if (!s_state.has_operator_position) {
-        return;
-    }
-    if (source_timestamp == 0 || source_timestamp > s_state.operator_position_timestamp) {
+    if (source_timestamp > s_state.operator_position_timestamp) {
         s_state.operator_position_timestamp  = source_timestamp;
         s_state.operator_position_updated_ms = now_ms();
     }
 }
 
-// The operator position is the take-off point when no other is available.
-static void use_takeoff_point_locked(void)
-{
-    s_state.has_operator_position   = true;
-    s_state.operator_latitude       = s_state.takeoff_latitude;
-    s_state.operator_longitude      = s_state.takeoff_longitude;
-    s_state.operator_altitude_geo_m = s_state.takeoff_altitude_geo_m;
-    s_state.operator_location_type  = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
-}
-
 // A live (LIVE_GNSS) operator position whose source timestamp has not advanced
-// within the expiry window is stale: fall back to the take-off point, or drop it.
-// Checked on every Location update, which arrives at least once per second.
+// within the expiry window is stale. It stays stored with its role; while it is
+// expired the take-off point is broadcast instead (remoteid_operator_position).
+// Run on every update and on the store's 1 s tick, so it also fires when every
+// input has stopped.
 static void expire_live_operator_position_locked(void)
 {
-    if (!s_state.has_operator_position ||
+    if (!s_state.has_operator_position || s_state.operator_position_expired ||
         s_state.operator_location_type != ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS ||
         now_ms() - s_state.operator_position_updated_ms <= CONFIG_REMOTEID_OPERATOR_LOCATION_EXPIRY_MS) {
         return;
     }
     s_state.operator_position_expired = true;
-    if (s_state.has_takeoff_position) {
-        use_takeoff_point_locked();
-        ESP_LOGW(TAG, "live operator position stale, broadcasting the take-off point");
-    } else {
-        s_state.has_operator_position = false;
-        ESP_LOGW(TAG, "live operator position stale and no take-off point, cleared");
-    }
+    ESP_LOGW(TAG, "live operator position stale, broadcasting %s",
+             s_state.has_takeoff_position ? "the take-off point" : "no operator position");
 }
 
-// After an expiry only a newer source timestamp may replace the operator
-// position; a relay repeating its cached SYSTEM / SYSTEM_UPDATE is ignored. A
-// source without time (timestamp 0) cannot be told apart from a cache and is
-// aged by receipt instead, so it is let through.
+// Whether a position from a System / SystemUpdate with this source timestamp
+// may replace the stored one. A known timestamp older than the stored one is
+// out of order and dropped. After an expiry only a newer known timestamp
+// counts, so neither the cached sample nor an unknown time revives it.
 static bool operator_position_update_allowed_locked(uint32_t source_timestamp)
 {
-    if (s_state.operator_position_expired && source_timestamp != 0 &&
-        source_timestamp <= s_state.operator_position_timestamp) {
+    if (source_timestamp == 0) {
+        return !s_state.operator_position_expired;
+    }
+    if (source_timestamp < s_state.operator_position_timestamp) {
+        return false;
+    }
+    if (s_state.operator_position_expired && source_timestamp == s_state.operator_position_timestamp) {
         return false;
     }
     s_state.operator_position_expired = false;
@@ -422,15 +413,14 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         s_state.ts_acc            = ts_acc;
         s_state.timestamp         = timestamp;
         s_state.location_updated_ms = now_ms();
-        expire_live_operator_position_locked();
         ESP_LOGD(TAG, "updated Location from input source (has_position=%d status=%d)",
                  s_state.has_position, s_state.status);
         break;
     }
     case REMOTEID_STORE_UPDATE_SYSTEM:
         // A System without an operator position (0, 0) carries none: ArduPilot
-        // sends that until the ground station provides one. It must not erase
-        // the take-off point captured at arming.
+        // sends that until the ground station provides one. It does not erase
+        // the stored one.
         if (update->data.system.has_operator_position &&
             operator_position_update_allowed_locked(update->data.system.timestamp)) {
             s_state.has_operator_position   = true;
@@ -454,6 +444,7 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         ESP_LOGD(TAG, "updated System from input source");
         break;
     case REMOTEID_STORE_UPDATE_SYSTEM_UPDATE:
+        // Position only: the role (live / fixed) stays the one from the last System.
         if (!update->data.system_update.has_operator_position ||
             !operator_position_update_allowed_locked(update->data.system_update.timestamp)) {
             break;
@@ -530,6 +521,8 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         break;
     }
     case REMOTEID_STORE_UPDATE_TAKEOFF:
+        // A new flight: the previous take-off point no longer applies.
+        s_state.has_takeoff_position = false;
         if (!s_state.has_position || !location_is_fresh_locked()) {
             ESP_LOGW(TAG, "arm detected but no fresh position, take-off point not captured");
             break;
@@ -540,14 +533,6 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         s_state.takeoff_altitude_geo_m = s_state.altitude_geo_m;
         ESP_LOGI(TAG, "take-off point captured: %.6f, %.6f @ %.1f m",
                  s_state.takeoff_latitude, s_state.takeoff_longitude, s_state.takeoff_altitude_geo_m);
-        if (s_state.has_operator_position &&
-            s_state.operator_location_type != ODID_OPERATOR_LOCATION_TYPE_TAKEOFF) {
-            ESP_LOGI(TAG, "keeping the source-supplied operator position");
-        } else {
-            use_takeoff_point_locked();
-            s_state.operator_position_timestamp  = remoteid_clock_odid_2019();
-            s_state.operator_position_updated_ms = now_ms();
-        }
         break;
     }
     return true;
@@ -573,6 +558,7 @@ static void process_update_locked(remoteid_store_update_t *update)
         s_operator_id_valid = operator_id_is_usable(&s_state);
     }
 
+    expire_live_operator_position_locked();
     update_ready_state_locked();
     if (!was_ready && s_basic_id_valid && s_operator_id_valid) {
         ESP_LOGI(TAG, "Remote ID identity complete, broadcasts may start");
@@ -585,12 +571,16 @@ static void remoteid_store_task(void *arg)
     remoteid_store_update_t update;
 
     while (true) {
-        if (xQueueReceive(s_update_queue, &update, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
+        // The timeout bounds how late a live operator position expires when no
+        // input arrives at all.
+        bool received = xQueueReceive(s_update_queue, &update, pdMS_TO_TICKS(REMOTEID_STORE_TICK_MS)) == pdTRUE;
 
         xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-        process_update_locked(&update);
+        if (received) {
+            process_update_locked(&update);
+        } else {
+            expire_live_operator_position_locked();
+        }
         xSemaphoreGive(s_state_mutex);
     }
 }

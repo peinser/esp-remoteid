@@ -596,7 +596,11 @@ static void remoteid_mavlink_status_task(void *arg)
         // expired operator location must also block arming.
         if (ready) {
             remoteid_state_t snap;
-            if (remoteid_store_get_snapshot(&snap) == ESP_OK && !snap.has_operator_position) {
+            double lat, lon;
+            float alt;
+            ODID_operator_location_type_t type;
+            if (remoteid_store_get_snapshot(&snap) == ESP_OK &&
+                !remoteid_operator_position(&snap, &lat, &lon, &alt, &type)) {
                 ready = false;
                 fail = "Operator location missing or stale";
             }
@@ -643,17 +647,20 @@ static void remoteid_mavlink_operator_location_task(void *arg)
 
     while (true) {
         remoteid_state_t snap;
-        if (remoteid_store_get_snapshot(&snap) == ESP_OK && snap.has_operator_position &&
-            snap.operator_location_type != ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS &&
-            !snap.operator_position_expired) {
+        double latitude, longitude;
+        float altitude_geo_m;
+        ODID_operator_location_type_t type;
+        if (remoteid_store_get_snapshot(&snap) == ESP_OK && !snap.operator_position_expired &&
+            remoteid_operator_position(&snap, &latitude, &longitude, &altitude_geo_m, &type) &&
+            type != ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS) {
             if (remoteid_clock_is_synced()) {
                 // Fixed/takeoff location: keep it fresh toward the autopilot.
-                int32_t lat = (int32_t)lround(snap.operator_latitude  * 1e7);
-                int32_t lon = (int32_t)lround(snap.operator_longitude * 1e7);
+                int32_t lat = (int32_t)lround(latitude  * 1e7);
+                int32_t lon = (int32_t)lround(longitude * 1e7);
                 mavlink_message_t msg;
                 mavlink_msg_open_drone_id_system_update_pack_chan(
                     outgoing_system_id(), compid, MAVLINK_COMM_1, &msg,
-                    0, 0, lat, lon, snap.operator_altitude_geo_m, remoteid_clock_odid_2019());
+                    0, 0, lat, lon, altitude_geo_m, remoteid_clock_odid_2019());
                 send_mavlink(&msg);
                 ESP_LOGD(TAG, "republished fixed operator location via System Update");
             } else {

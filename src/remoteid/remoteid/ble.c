@@ -227,7 +227,6 @@ static void pause_until_ready(ble_transport_ctx_t *ctx, TickType_t *last_wake)
     }
     ble_gap_ext_adv_stop(ctx->instance);
     ctx->started = false;
-    remoteid_selftest_paused(ctx->transport);
     ESP_LOGW(TAG, "%s transport paused until Remote ID identity is ready", ctx->label);
     ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
     *last_wake = xTaskGetTickCount();
@@ -503,6 +502,13 @@ static void nimble_host_task(void *param)
 
 esp_err_t remoteid_ble_start(void)
 {
+    // Declared before the host starts, so a host that never syncs is caught too.
+#if CONFIG_REMOTEID_TRANSPORT_BLE
+    remoteid_selftest_expect(REMOTEID_TRANSPORT_BLE4);
+#endif
+#if CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE
+    remoteid_selftest_expect(REMOTEID_TRANSPORT_BLE5);
+#endif
     ESP_RETURN_ON_ERROR(nimble_port_init(), TAG, "initialize NimBLE");
     ESP_RETURN_ON_ERROR(configure_ble_tx_power(), TAG, "configure BLE TX power");
 

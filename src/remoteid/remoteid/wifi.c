@@ -261,7 +261,6 @@ static void remoteid_wifi_beacon_task(void *arg)
     while (true) {
         if (!remoteid_store_is_ready()) {
             ESP_LOGW(TAG, "Wi-Fi Beacon transport paused until Remote ID identity is ready again");
-            remoteid_selftest_paused(REMOTEID_TRANSPORT_WIFI_BEACON);
             ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
             last_wake = xTaskGetTickCount();
         }
@@ -292,7 +291,6 @@ static void remoteid_wifi_nan_task(void *arg)
     while (true) {
         if (!remoteid_store_is_ready()) {
             ESP_LOGW(TAG, "Wi-Fi NAN transport paused until Remote ID identity is ready again");
-            remoteid_selftest_paused(REMOTEID_TRANSPORT_WIFI_NAN);
             ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
             last_wake = xTaskGetTickCount();
         }
@@ -309,6 +307,12 @@ static void remoteid_wifi_nan_task(void *arg)
 
 esp_err_t remoteid_wifi_start(void)
 {
+#if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON
+    remoteid_selftest_expect(REMOTEID_TRANSPORT_WIFI_BEACON);
+#endif
+#if CONFIG_REMOTEID_TRANSPORT_WIFI_NAN
+    remoteid_selftest_expect(REMOTEID_TRANSPORT_WIFI_NAN);
+#endif
     ESP_RETURN_ON_ERROR(init_wifi_driver(), TAG, "initialize Wi-Fi Remote ID transport");
 
 #if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON

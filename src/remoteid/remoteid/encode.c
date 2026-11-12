@@ -57,19 +57,26 @@ static void fill_location_data(const remoteid_state_t *state, ODID_Location_data
 
 static void fill_system_data(const remoteid_state_t *state, ODID_System_data *data)
 {
-    data->OperatorLocationType = state->operator_location_type;
+    double latitude, longitude;
+    float altitude_geo_m;
+    ODID_operator_location_type_t type;
+    if (!remoteid_operator_position(state, &latitude, &longitude, &altitude_geo_m, &type)) {
+        latitude       = 0.0;
+        longitude      = 0.0;
+        altitude_geo_m = (float)INV_ALT;
+        type           = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
+    }
+    data->OperatorLocationType = type;
     data->ClassificationType   = state->classification_type;
-    data->OperatorLatitude     = state->has_operator_position ? state->operator_latitude  : 0.0;
-    data->OperatorLongitude    = state->has_operator_position ? state->operator_longitude : 0.0;
+    data->OperatorLatitude     = latitude;
+    data->OperatorLongitude    = longitude;
     data->AreaCount            = state->area_count;
     data->AreaRadius           = state->area_radius;
     data->AreaCeiling          = state->area_ceiling_m;
     data->AreaFloor            = state->area_floor_m;
     data->CategoryEU           = state->eu_category;
     data->ClassEU              = state->eu_class;
-    data->OperatorAltitudeGeo  = state->has_operator_position
-                                 ? state->operator_altitude_geo_m
-                                 : (float)INV_ALT;
+    data->OperatorAltitudeGeo  = altitude_geo_m;
     data->Timestamp            = remoteid_clock_odid_2019(); // 0 until UTC is known
 }
 

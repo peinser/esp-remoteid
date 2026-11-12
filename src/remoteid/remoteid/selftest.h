@@ -16,14 +16,17 @@ typedef enum remoteid_transport {
     REMOTEID_TRANSPORT_COUNT,
 } remoteid_transport_t;
 
-// A transport reports each successful transmission, and when it pauses (no
-// usable identity yet). The self-test latches a failure when a transport that
-// is not paused has sent nothing for 5 s: a hung task or radio driver would
-// otherwise go unnoticed while ARM_STATUS still reports good to arm.
+// A transport declares itself when it starts and reports each successful
+// transmission. While there is a usable identity (the transports only send
+// then), every declared transport must send within 5 s of the identity
+// becoming usable and then at least every 5 s; otherwise the self-test latches
+// a failure. This catches a task or radio driver that hangs before its first
+// transmission as well as one that stops later.
+void remoteid_selftest_expect(remoteid_transport_t transport);
 void remoteid_selftest_transmitted(remoteid_transport_t transport);
-void remoteid_selftest_paused(remoteid_transport_t transport);
 
-// True once the transports have been started and no fault has been reported.
+// True once the transports have been started, each of them has transmitted,
+// and no fault has been reported.
 // Part of the readiness reported over ARM_STATUS and on the status indicator.
 bool remoteid_selftest_ok(void);
 
