@@ -470,17 +470,26 @@ def scenario_selftest(driver, monitor, args):
     wait_for(lambda: (monitor.snapshot()["arm_status"] or (1,))[0] == 0, 6, feed_live)
     frozen = odid_timestamp_now()
 
+    # Arm while the aircraft location is stale, so no take-off point is captured
+    # and the expired pilot position has no fallback (disarmed, the take-off
+    # point captured at arming would cover it and readiness stays good).
+    print("  (arming without a fresh aircraft location: no take-off point)")
+    for _ in range(5):
+        driver.heartbeat(armed=True)
+        driver.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS, timestamp=frozen)
+        time.sleep(1.0)
+
     def feed_cached_relay():
-        driver.heartbeat()
+        driver.heartbeat(armed=True)
         driver.location(*moving_position(args, 0))
         driver.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS, timestamp=frozen)
 
-    print("  (live operator set; GCS stops, autopilot relays the cached SYSTEM, waiting for expiry...)")
+    print("  (GCS stops, autopilot relays the cached SYSTEM, waiting for expiry...)")
     expired = wait_for(
-        lambda: "operator" in ((monitor.snapshot()["arm_status"] or (0, ""))[1]).lower(), 15,
+        lambda: "pilot" in ((monitor.snapshot()["arm_status"] or (0, ""))[1]).lower(), 15,
         feed_cached_relay)
     check("live operator location expires despite a cached SYSTEM relay", bool(expired),
-          "" if expired else "did not expire - check operator-location loop / expiry window")
+          "" if expired else "ARM_STATUS did not report 'No pilot or take-off position' - check the expiry window")
 
     # 7. G5: a malformed CTA-2063-A serial over MAVLink. Informational (non-fatal):
     #    a normal build keeps broadcasting it (warning only); a strict-compliance

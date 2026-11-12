@@ -63,6 +63,8 @@ static bool s_selftest_failed;
 // Autopilot emergency state (from HEARTBEAT). Forces EMERGENCY status unless a
 // system-failure is latched.
 static bool s_autopilot_emergency;
+// Arm state of the bound autopilot: -1 until the first report, then 0 or 1.
+static int s_armed = -1;
 
 static uint32_t now_ms(void)
 {
@@ -281,11 +283,29 @@ static bool location_is_fresh_locked(void)
            now_ms() - s_state.location_updated_ms <= REMOTEID_LOCATION_FRESH_MS;
 }
 
-// EU 2019/945 data (iii): time stamp, position and height above the surface or
-// take-off point. Speed and course may legitimately be unknown when stationary.
+// Below this ground speed a GNSS course is not meaningful, so an unknown course
+// is accepted; above it the course is mandatory.
+#define REMOTEID_COURSE_MIN_SPEED_M_S 0.5f
+
+// EU 2019/945 Part 6(3)(iii) and (iv): time stamp, position, height above the
+// surface or take-off point, ground speed, and course from true north.
 static bool location_is_complete_locked(void)
 {
-    return s_state.has_position && s_state.height > (float)INV_ALT && s_state.timestamp >= 0.0f;
+    bool speed_known  = s_state.speed_horizontal != (float)INV_SPEED_H;
+    bool course_known = s_state.direction != (float)INV_DIR;
+    return s_state.has_position && s_state.height > (float)INV_ALT && s_state.timestamp >= 0.0f &&
+           speed_known && (course_known || s_state.speed_horizontal < REMOTEID_COURSE_MIN_SPEED_M_S);
+}
+
+// Part 6(3)(v): a pilot position or take-off point is available, or one will be
+// captured when the (known to be disarmed) autopilot arms. Requiring a captured
+// take-off point before arming would deadlock, since it is captured at arming.
+static bool pilot_position_covered_locked(void)
+{
+    double latitude, longitude;
+    float altitude_geo_m;
+    ODID_operator_location_type_t type;
+    return remoteid_operator_position(&s_state, &latitude, &longitude, &altitude_geo_m, &type) || s_armed == 0;
 }
 
 // Age the operator position by its source timestamp, not by receipt: only a
@@ -413,9 +433,14 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         s_state.vert_acc          = update->data.location.vert_acc;
         s_state.baro_acc          = update->data.location.baro_acc;
         s_state.speed_acc         = update->data.location.speed_acc;
+        // Fresh means a new sample: a relay repeating a cached Location keeps its
+        // timestamp and does not count (a change also covers the UTC-hour
+        // rollover). A sample without a known time can only count on receipt.
+        if (timestamp < 0.0f || timestamp != s_state.timestamp) {
+            s_state.location_updated_ms = now_ms();
+        }
         s_state.ts_acc            = ts_acc;
         s_state.timestamp         = timestamp;
-        s_state.location_updated_ms = now_ms();
         ESP_LOGD(TAG, "updated Location from input source (has_position=%d status=%d)",
                  s_state.has_position, s_state.status);
         break;
@@ -525,7 +550,12 @@ static bool apply_update_locked(remoteid_store_update_t *update)
                  page->DataPage, s_state.ext_auth_last_page, s_state.has_ext_auth);
         break;
     }
-    case REMOTEID_STORE_UPDATE_TAKEOFF:
+    case REMOTEID_STORE_UPDATE_ARMED: {
+        bool takeoff = s_armed == 0 && update->data.armed.armed;
+        s_armed = update->data.armed.armed;
+        if (!takeoff) {
+            break;
+        }
         // A new flight: the previous take-off point no longer applies.
         s_state.has_takeoff_position = false;
         if (!s_state.has_position || !location_is_fresh_locked()) {
@@ -539,6 +569,7 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         ESP_LOGI(TAG, "take-off point captured: %.6f, %.6f @ %.1f m",
                  s_state.takeoff_latitude, s_state.takeoff_longitude, s_state.takeoff_altitude_geo_m);
         break;
+    }
     }
     return true;
 }
@@ -697,6 +728,8 @@ remoteid_health_t remoteid_store_health(void)
         health = REMOTEID_HEALTH_LOCATION_STALE;
     } else if (CONFIG_REMOTEID_COMPLIANCE_STRICT && !location_is_complete_locked()) {
         health = REMOTEID_HEALTH_LOCATION_INCOMPLETE;
+    } else if (!pilot_position_covered_locked()) {
+        health = REMOTEID_HEALTH_NO_PILOT_POSITION;
     } else {
         health = REMOTEID_HEALTH_OK;
     }
@@ -715,7 +748,8 @@ const char *remoteid_store_health_text(remoteid_health_t health)
     case REMOTEID_HEALTH_TRANSPORTS_NOT_RUNNING: return "Remote ID transmitters not running";
     case REMOTEID_HEALTH_LOCATION_STALE:         return "No fresh aircraft location";
     case REMOTEID_HEALTH_OPERATOR_ID_REJECTED:   return "Operator ID failed consistency check";
-    case REMOTEID_HEALTH_LOCATION_INCOMPLETE:    return "No aircraft position, height or time";
+    case REMOTEID_HEALTH_LOCATION_INCOMPLETE:    return "Incomplete aircraft location data";
+    case REMOTEID_HEALTH_NO_PILOT_POSITION:      return "No pilot or take-off position";
     }
     return "Remote ID not ready";
 }

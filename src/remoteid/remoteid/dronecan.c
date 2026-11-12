@@ -5,7 +5,8 @@
 #if CONFIG_REMOTEID_DRONECAN_INPUT
 
 // DroneCAN node for ArduPilot's OpenDroneID CAN backend (DID_CANDRIVER):
-//   in:  dronecan.remoteid.BasicID / Location / SelfID / System / OperatorID
+//   in:  dronecan.remoteid.BasicID / Location / SelfID / System / OperatorID,
+//        uavcan.equipment.safety.ArmingStatus (take-off point capture)
 //   out: dronecan.remoteid.ArmStatus and uavcan.protocol.NodeStatus at 1 Hz,
 //        uavcan.protocol.GetNodeInfo responses.
 // Field layouts follow the DSDL in the DroneCAN repository; the messages carry
@@ -47,6 +48,7 @@
 
 #define DTID_GET_NODE_INFO 1      // service
 #define DTID_NODE_STATUS   341
+#define DTID_ARMING_STATUS 1100
 #define DTID_RID_BASIC_ID    20030
 #define DTID_RID_LOCATION    20031
 #define DTID_RID_SELF_ID     20032
@@ -350,6 +352,26 @@ static bool rid_message_signature(uint16_t data_type_id, uint64_t *signature)
     }
 }
 
+// uavcan.equipment.safety.ArmingStatus (status uint8: 0 disarmed, 255 fully
+// armed), which ArduPilot broadcasts at 2 Hz. Only the bound autopilot's counts;
+// it is sent to the store on change, and again on the next one if the queue was full.
+static void handle_arming_status(const dronecan_transfer_meta_t *meta, const uint8_t *payload, size_t len)
+{
+    static int s_reported_armed = -1;
+    if (s_autopilot_node == 0 || meta->source_node_id != s_autopilot_node || len < 1) {
+        return;
+    }
+    bool armed = payload[0] != 0;
+    if (armed == s_reported_armed) {
+        return;
+    }
+    remoteid_store_update_t update = { .type = REMOTEID_STORE_UPDATE_ARMED, .data.armed.armed = armed };
+    if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
+        s_reported_armed = armed;
+        ESP_LOGI(TAG, "vehicle %s", armed ? "armed" : "disarmed");
+    }
+}
+
 static void handle_rid_message(const dronecan_transfer_meta_t *meta, const uint8_t *payload, size_t len)
 {
     if (s_autopilot_node == 0) {
@@ -547,6 +569,14 @@ static dronecan_rx_transfer_t *rx_slot(const dronecan_transfer_meta_t *meta, boo
 
 static void handle_message_frame(const twai_message_t *frame, const dronecan_transfer_meta_t *meta)
 {
+    // A one-byte payload always fits a single frame.
+    if (meta->data_type_id == DTID_ARMING_STATUS) {
+        if (meta->start_of_transfer && meta->end_of_transfer) {
+            handle_arming_status(meta, frame->data, frame->data_length_code - 1);
+        }
+        return;
+    }
+
     uint64_t signature;
     if (!rid_message_signature(meta->data_type_id, &signature)) {
         return;

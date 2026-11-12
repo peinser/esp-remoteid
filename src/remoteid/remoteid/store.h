@@ -23,10 +23,11 @@ typedef enum remoteid_store_update_type {
     // A single received Authentication page. The store accumulates pages and
     // marks external auth ready once 0..LastPageIndex have all arrived.
     REMOTEID_STORE_UPDATE_AUTH,
-    // Vehicle armed: record the current location as the take-off point and use
-    // it as the operator position unless a source supplies a live or fixed one.
-    // Carries no payload. Ignored when the location is stale.
-    REMOTEID_STORE_UPDATE_TAKEOFF,
+    // Arm state of the bound autopilot (MAVLink HEARTBEAT or DroneCAN
+    // ArmingStatus), sent on change. A disarmed-to-armed transition captures
+    // the take-off point; the first state after boot only sets it, so a module
+    // that reboots in flight does not take its in-flight position.
+    REMOTEID_STORE_UPDATE_ARMED,
 } remoteid_store_update_type_t;
 
 typedef struct remoteid_store_update {
@@ -92,6 +93,9 @@ typedef struct remoteid_store_update {
         struct {
             bool active;
         } emergency;
+        struct {
+            bool armed;
+        } armed;
     } data;
 } remoteid_store_update_t;
 
@@ -110,8 +114,12 @@ typedef enum remoteid_health {
     // An operator ID failed the consistency check (EU 2019/945: the operator
     // gets an error message). Cleared by the next valid operator ID.
     REMOTEID_HEALTH_OPERATOR_ID_REJECTED,
-    // Strict mode: the fresh Location lacks the mandatory position, height or time.
+    // Strict mode: the fresh Location lacks mandatory data (position, height,
+    // time stamp, ground speed, or course while moving).
     REMOTEID_HEALTH_LOCATION_INCOMPLETE,
+    // Neither a pilot position nor a take-off point can be broadcast, and none
+    // will be captured (armed, or arm state unknown). EU 2019/945 Part 6(3)(v).
+    REMOTEID_HEALTH_NO_PILOT_POSITION,
 } remoteid_health_t;
 
 esp_err_t remoteid_store_start(const remoteid_state_t *initial_state);

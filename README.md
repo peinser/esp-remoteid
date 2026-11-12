@@ -1,4 +1,4 @@
-ESP32-S3 Remote ID add-on module firmware targeting EU UAS Regulation compliance, built on ESP-IDF and OpenDroneID.
+ESP32-S3 Remote ID add-on module firmware that implements the EU direct remote identification requirements, built on ESP-IDF and OpenDroneID. Conformity of a product built on it is not yet established; see [Conformity status](#conformity-status).
 
 The firmware broadcasts the four mandatory message types required by EU Commission Delegated Regulation (EU) 2019/945 and implementing Regulation (EU) 2021/664, encoded per ASTM F3411-22a (OpenDroneID): Basic ID, Location/Vector, System, and Operator ID. Transmission supports Bluetooth LE legacy advertising and Wi-Fi Beacon advertisements. Payload encoding uses the official [`opendroneid-core-c`](https://github.com/opendroneid/opendroneid-core-c) library, included as a git submodule.
 
@@ -34,7 +34,7 @@ make menuconfig
 
 and navigate to **ESP Remote ID**. The sections below explain what each option means and which values are legally required.
 
-> **Note:** The firmware is protocol-compliant with ASTM F3411 and the EU UAS Regulation (EU) 2019/945 / 2021/664 broadcast requirements. Whether your specific operation is legal depends on your national CAA rules, aircraft registration, and operating category. This firmware does not substitute for regulatory advice.
+> **Note:** The firmware implements the ASTM F3411 / EN 4709-002 message formats and the Regulation (EU) 2019/945 broadcast requirements as far as they can be checked in code and host tests; [Conformity status](#conformity-status) lists what is still to be shown. Whether your specific operation is legal depends on your national CAA rules, aircraft registration, and operating category. This firmware does not substitute for regulatory advice.
 
 ### Required: UAS ID and Operator ID
 
@@ -81,7 +81,7 @@ At boot the firmware logs an error when the block is empty (the module then stay
 | Operator ID | 16-character ID accepted unverified; a 20-character `-xyz` form is verified and stripped | Only the 20-character form, verified and stripped |
 | UA type | Configured, or from Basic ID input | Configured at build time |
 | Aircraft Location (MAVLink) | From any sender on the link that describes this aircraft | Only from the bound autopilot; a ground station or companion cannot set the aircraft position |
-| Ready to arm | Fresh Location (runtime position source) | Fresh Location with position, height and time stamp ("No aircraft position, height or time" otherwise) |
+| Ready to arm | Fresh Location (runtime position source) and a pilot position or take-off point | In addition, the Location carries a position, height, time stamp, ground speed and, when moving faster than 0.5 m/s, a course ("Incomplete aircraft location data" otherwise) |
 | Fixed configured position | Available for bench tests | Not available |
 | Start-up delay | Configurable (default 10 s) | None: a module that reboots in flight resumes broadcasting at once |
 | OTA server | Optional | Only with Secure Boot (signed images) and a WPA2 password of at least 8 characters; the build fails otherwise |
@@ -95,7 +95,7 @@ The serial cannot be changed by reflashing, because it lives in eFuse. The rest 
 
 ### EU compliance mapping
 
-How the firmware meets the requirements for a direct remote identification add-on, Regulation (EU) 2019/945 Annex Part 6, checked against the consolidated version of 24 June 2025 (Part 6 is as amended by Regulation (EU) 2020/1058; later amendments did not change it). Classes C1 to C3 (Parts 2 to 4) have the same data list plus an indication of the emergency status.
+How the firmware addresses the requirements for a direct remote identification add-on, Regulation (EU) 2019/945 Annex Part 6, checked against the consolidated version of 24 June 2025 (Part 6 is as amended by Regulation (EU) 2020/1058; later amendments did not change it). Classes C1 to C3 (Parts 2 to 4) have the same data list plus an indication of the emergency status.
 
 | Requirement | Implementation |
 |-------------|----------------|
@@ -104,9 +104,9 @@ How the firmware meets the requirements for a direct remote identification add-o
 | (3) Real-time periodic broadcast during the whole flight, open and documented protocol, receivable by existing mobile devices | ASTM F3411-22a / EN 4709-002 messages over Bluetooth 4 legacy advertising (default), Bluetooth 5 Long Range (Message Packs), Wi-Fi Beacon and Wi-Fi NAN; strict mode requires one of the last three. Location and System at least every second, the other messages at least every 3 s. Transmit failures latch a Remote ID system failure (broadcast status, arming blocked), and so does an enabled transport that does not send within 5 s of the identity becoming usable or of its previous transmission. Good to arm is only reported once every enabled transport has transmitted. |
 | (3)(i) Operator registration number and verification code, unless the check failed | Operator ID message: the 16 public characters, the last being the check character; the 3 secret characters are never broadcast. A number that fails the check is never broadcast. |
 | (3)(ii) Serial number | Basic ID message, ID type serial number. |
-| (3)(iii) Time stamp, position, height above the surface or take-off point | Location message from the autopilot, with its time stamp and height reference. Strict mode only reports ready to arm when all three are present. |
-| (3)(iv) Course from true north and ground speed | Location direction and horizontal speed. |
-| (3)(v) Position of the remote pilot or, if not available, the take-off point | System message. The pilot position comes from the ground station. The take-off point is captured at arming (MAVLink) and used when no pilot position is available, including when a live pilot position stops updating. |
+| (3)(iii) Time stamp, position, height above the surface or take-off point | Location message from the autopilot, with its time stamp and height reference. A Location only counts as fresh when its sample timestamp changes, so a relay repeating a cached sample is reported stale. Strict mode only reports ready to arm when all three are present. |
+| (3)(iv) Course from true north and ground speed | Location direction and horizontal speed. Strict mode requires a known ground speed, and a known course above 0.5 m/s, before it reports ready to arm. |
+| (3)(v) Position of the remote pilot or, if not available, the take-off point | System message. The pilot position comes from the ground station. The take-off point is captured when the bound autopilot arms (MAVLink `HEARTBEAT`, DroneCAN `ArmingStatus`) and used when no pilot position is available, including when a live pilot position stops updating. Every input reports "No pilot or take-off position" when neither is available, except while the autopilot is known to be disarmed (the take-off point is captured at arming, so requiring it earlier would deadlock). |
 | Emergency status (C1 to C3) | Location status, from the autopilot or derived from its `HEARTBEAT`. |
 | (4) Reduce the ability to tamper | Strict mode: serial in write-protected eFuse, aircraft position only from the autopilot, OTA only with Secure Boot and WPA2, no fixed position. Secure Boot and flash encryption are required for production units. |
 | (5) Manufacturer's instructions: transmission protocol, installation, upload of the operator number | This README covers the protocol and setup. A product's user manual has to state them for the end user. |
@@ -143,6 +143,17 @@ Not covered by this check:
 - **ASTM F3411-22a**, the message format. Messages are encoded with the reference library [`opendroneid-core-c`](https://github.com/opendroneid/opendroneid-core-c); the standard text itself has not been reviewed.
 - **Commission Implementing Regulation (EU) 2019/947**, Article 14, which sets the operator registration. The check-character algorithm follows EASA's published operator number scheme and is verified against EASA's example number.
 - **[EASA Opinion No 06/2026](https://www.easa.europa.eu/en/document-library/opinions/opinion-no-062026)**, a proposal to update 2019/945 and 2019/947. It is not law yet and has not been reviewed.
+
+#### Conformity status
+
+The code and the host tests show the behaviour described above. Conformity of a product also needs evidence that this repository does not provide yet:
+
+- **EN 4709-002:2023** reviewed clause by clause (the findings above come from draft-era sources).
+- **Radio measurements on hardware**: sample-to-air age of the Location data, the actual message rates per transport, transmit power and directivity.
+- **Reception and range** with current Android and iOS phones, per transport (EN 4709-002 gives no presumption of conformity for this).
+- **Failure behaviour on hardware**: reboot in flight, loss of the autopilot link, loss of the pilot position stream.
+- **Source contract**: the aircraft position source must deliver new Location samples with correct UTC timestamps. The module detects a repeated cached sample but not an absolute age error, because its clock is not always independent of the source (see the clock provenance in [Operator-location freshness loop](#operator-location-freshness-loop)). ArduPilot's fixed 1 Hz rate is marginal against the 1-second data-age rule.
+- **Product evidence**: per-unit serial provisioning (eFuse), Secure Boot and flash encryption, the serial marking on the module and packaging, and the user manual (transmission protocol, installation, operator number upload).
 
 ### UA type
 
@@ -226,7 +237,7 @@ Status behavior:
 | Operational | Configured green flash pattern |
 | Error state | Red fast blink |
 
-Operational means the same as `GOOD_TO_ARM`: a valid Basic ID/UAS ID and Operator ID, all enabled transports running without a reported fault and, when the position comes from MAVLink or DroneCAN, a Location received within the last 3 s. Anything else shows the waiting pattern. A latched Remote ID system failure, an operator ID that failed its consistency check, or an invalid serial shows the error pattern.
+Operational means the same as `GOOD_TO_ARM`: a valid Basic ID/UAS ID and Operator ID, all enabled transports running without a reported fault and, when the position comes from MAVLink or DroneCAN, a new Location sample within the last 3 s, plus a pilot position or take-off point (or a disarmed autopilot that will provide one at arming). Anything else shows the waiting pattern. A latched Remote ID system failure, an operator ID that failed its consistency check, or an invalid serial shows the error pattern.
 
 The RGB data pin is not a suitable transistor trigger for external lights because addressable LEDs use a high-speed encoded data waveform. Use the external GPIO lighting outputs for that purpose.
 
@@ -335,7 +346,7 @@ Either way, this module consumes the standard messages once they are flowing; no
 When `Send HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS` is enabled, the module periodically transmits two messages back to the flight controller (this requires bidirectional UART wiring, i.e. the TX GPIO connected to the flight controller's RX):
 
 - `HEARTBEAT` with component type `MAV_TYPE_ODID`, so the flight controller and ground station see the Remote ID module as a live component of the vehicle.
-- `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` only when a usable identity is present, all enabled transports are running without a reported fault and (for a MAVLink/DroneCAN position source) a Location arrived within the last 3 s. In strict compliance mode that Location must also carry a position, a height and a time stamp. Otherwise `PRE_ARM_FAIL_GENERIC` with the reason (for example "No fresh aircraft location", "Operator ID failed consistency check" or "Remote ID transmitters not running").
+- `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` only when a usable identity is present, all enabled transports are running without a reported fault, (for a MAVLink/DroneCAN position source) a new Location sample arrived within the last 3 s, and a pilot position or take-off point is available or will be captured at arming. In strict compliance mode that Location must also carry a position, height, time stamp, ground speed and, when moving, a course. Otherwise `PRE_ARM_FAIL_GENERIC` with the reason (for example "No fresh aircraft location", "Operator ID failed consistency check" or "Remote ID transmitters not running").
 
 This is what lets ArduPilot treat the module as present and healthy. With the relevant `DID_OPTIONS` bit set, ArduPilot refuses to arm until it receives `GOOD_TO_ARM`, so the drone cannot take off without a working Remote ID broadcast. The module shares the flight controller's system ID (adopted automatically by default) and uses an Open Drone ID component ID, so the status appears as part of the same vehicle.
 
@@ -350,7 +361,7 @@ The mode is derived from the `operator_location_type` carried in the last full `
 | `FIXED` / `TAKEOFF` | The firmware **republishes** `OPEN_DRONE_ID_SYSTEM_UPDATE` (broadcast `target=0/0`) at the configured period (0.5 Hz default), with the fixed position and a fresh timestamp, so the autopilot stays compliant even after the GCS disconnects. |
 | `LIVE_GNSS` | The firmware **only consumes** the GCS's live `SYSTEM_UPDATE` stream and **never republishes** it (re-stamping a moving position would falsify freshness). Freshness follows the source `timestamp` carried in `SYSTEM`/`SYSTEM_UPDATE`: only a newer timestamp counts as a refresh, so an autopilot that keeps relaying the last cached packet does not keep the location alive. A timestamp of 0 (unknown time) never counts, so a live position needs a real source timestamp. A position with an older timestamp than the stored one is out of order and ignored. If no newer timestamp arrives within the expiry window (`Live operator-location expiry`, checked at least every second even when all input stops), the firmware broadcasts the take-off point instead, or no operator position when none was captured; the stale position is not republished. The stored live position keeps its role, and only a newer timestamp (in `SYSTEM` or `SYSTEM_UPDATE`) brings it back, so the relayed cache cannot flip it back and forth and a second loss expires it again. A full `SYSTEM` that switches the role to `FIXED` or `TAKEOFF` is accepted even with timestamp 0, since those positions need no freshness; a `SYSTEM_UPDATE` carries no role and continues the live one. |
 
-When absent, the operator location is reported via `ARM_STATUS` (`PRE_ARM_FAIL_GENERIC`, "Operator location missing or stale"); this requires status output to also be enabled.
+When neither a pilot position nor a take-off point is available, `ARM_STATUS` reports "No pilot or take-off position" (this is part of the shared readiness, the same over DroneCAN).
 
 The republish timestamp (a Unix-2019 epoch) comes from the shared UTC clock, seeded from the bound autopilot's `SYSTEM_TIME`; until a valid `SYSTEM_TIME` has been seen, the loop holds off transmitting. Clock provenance differs per input: over MAVLink only the bound autopilot's `SYSTEM_TIME` (normally GPS time) sets it, over DroneCAN it is seeded once from the `System` timestamp, which ArduPilot forwards from the ground station (see [DroneCAN (ArduPilot)](#dronecan-ardupilot)). A GPS-derived clock is therefore not guaranteed on every path. Once seeded, the clock runs on the ESP32 crystal. The same clock stamps the broadcast System and Authentication messages. Without it those timestamps are sent as 0 and a Location without a source timestamp as unknown (`0xFFFF`); uptime is never broadcast as UTC.
 
@@ -407,6 +418,7 @@ DroneCAN is disabled by default. When enabled, the module joins the CAN bus as a
 | ArduPilot to module | `dronecan.remoteid.SelfID` | `20032` | static rotation | Self ID |
 | ArduPilot to module | `dronecan.remoteid.System` | `20033` | 1 Hz | Operator location, area, EU category/class, timestamp |
 | ArduPilot to module | `dronecan.remoteid.OperatorID` | `20034` | static rotation | Operator ID |
+| ArduPilot to module | `uavcan.equipment.safety.ArmingStatus` | `1100` | 2 Hz | Arm state, for the take-off point capture |
 | Module to ArduPilot | `dronecan.remoteid.ArmStatus` | `20035` | 1 Hz | `GOOD_TO_ARM` or the pre-arm failure text, same as the MAVLink `ARM_STATUS` |
 | Module to bus | `uavcan.protocol.NodeStatus` | `341` | 1 Hz | Node presence. Health is `CRITICAL` after a self-test failure, `OK` otherwise; mode is `OPERATIONAL` |
 | Module to requester | `uavcan.protocol.GetNodeInfo` response | `1` (service) | on request | Name `com.peinser.remoteid`, unique ID from the ESP32 MAC |
@@ -419,7 +431,7 @@ Rules applied to DroneCAN input:
 - A message with a non-empty `id_or_mac` describes another aircraft and is ignored.
 - Multi-frame transfers are checked against their transfer CRC; anonymous (node ID 0) transfers are ignored.
 - The UTC clock is seeded once from the first non-zero `System.timestamp`. ArduPilot sends no other UTC time over DroneCAN, and this value comes from the ground station, in whole seconds. Location timestamps come from ArduPilot's GPS time and are used as sent.
-- Arming capture does not apply: ArduPilot requires an operator location from the ground station before it arms, and sends it in `System`.
+- The take-off point is captured from `uavcan.equipment.safety.ArmingStatus` (`1100`), which ArduPilot broadcasts at 2 Hz on every DroneCAN bus: the bound node's disarmed-to-armed transition captures it, like the MAVLink `HEARTBEAT`.
 
 #### ArduPilot setup
 

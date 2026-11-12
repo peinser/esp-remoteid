@@ -119,21 +119,19 @@ static void submit_heartbeat(const mavlink_message_t *message)
         return;
     }
 
-    // Unknown (-1) until the first HEARTBEAT, so a module that reboots while the
-    // vehicle is armed does not take its in-flight position as the takeoff point.
-    static int s_was_armed = -1;
+    // The store captures the take-off point on a disarmed-to-armed edge. Sent on
+    // change, and again on the next HEARTBEAT if the queue was full.
+    static int s_reported_armed = -1;
     bool is_armed = (msg.base_mode & MAV_MODE_FLAG_SAFETY_ARMED) != 0;
-
-    if (is_armed && s_was_armed == 0) {
-        remoteid_store_update_t update = {.type = REMOTEID_STORE_UPDATE_TAKEOFF};
+    if (is_armed != s_reported_armed) {
+        remoteid_store_update_t update = { .type = REMOTEID_STORE_UPDATE_ARMED, .data.armed.armed = is_armed };
         if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
-            ESP_LOGI(TAG, "vehicle armed, capturing takeoff position");
+            s_reported_armed = is_armed;
+            ESP_LOGI(TAG, "vehicle %s", is_armed ? "armed" : "disarmed");
         } else {
-            ESP_LOGW(TAG, "vehicle armed, takeoff position capture dropped: queue full");
+            ESP_LOGW(TAG, "arm state update dropped: state queue full, retrying");
         }
     }
-
-    s_was_armed = is_armed;
 
 #if CONFIG_REMOTEID_MAVLINK_EMERGENCY_FROM_HEARTBEAT
     // Derive the OpenDroneID emergency status from the autopilot's HEARTBEAT
@@ -587,25 +585,12 @@ static void remoteid_mavlink_status_task(void *arg)
     while (true) {
         uint8_t sysid = outgoing_system_id();
         remoteid_health_t health = remoteid_store_health();
+        // The pilot position (or its take-off fallback) is part of the shared
+        // health, so MAVLink and DroneCAN report the same readiness.
         bool ready = (health == REMOTEID_HEALTH_OK);
         const char *fail = remoteid_store_health_text(health);
         mavlink_message_t msg;
 
-#if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
-        // When the firmware owns operator-location compliance, a missing or
-        // expired operator location must also block arming.
-        if (ready) {
-            remoteid_state_t snap;
-            double lat, lon;
-            float alt;
-            ODID_operator_location_type_t type;
-            if (remoteid_store_get_snapshot(&snap) == ESP_OK &&
-                !remoteid_operator_position(&snap, &lat, &lon, &alt, &type)) {
-                ready = false;
-                fail = "Operator location missing or stale";
-            }
-        }
-#endif
 
         mavlink_msg_heartbeat_pack_chan(sysid, compid, MAVLINK_COMM_1, &msg,
                                         MAV_TYPE_ODID, MAV_AUTOPILOT_INVALID, 0, 0,
