@@ -177,11 +177,28 @@ static void submit_operator_id(const mavlink_message_t *message)
     }
 }
 
+// EU 2019/945 requires that the user cannot modify the aircraft position data.
+// In strict mode it is therefore taken only from the bound autopilot, not from a
+// ground station or companion computer on the same link.
+static bool location_source_allowed(const mavlink_message_t *message)
+{
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT
+    if (!from_bound_autopilot(message)) {
+        ESP_LOGD(TAG, "ignored Location from %u/%u: strict mode takes it only from the autopilot",
+                 message->sysid, message->compid);
+        return false;
+    }
+#endif
+    (void)message;
+    return true;
+}
+
 static void submit_location(const mavlink_message_t *message)
 {
     mavlink_open_drone_id_location_t msg = { 0 };
     mavlink_msg_open_drone_id_location_decode(message, &msg);
-    if (accept_odid(message, msg.target_system, msg.target_component, msg.id_or_mac, "Location")) {
+    if (accept_odid(message, msg.target_system, msg.target_component, msg.id_or_mac, "Location") &&
+        location_source_allowed(message)) {
         remoteid_input_location(&msg, "MAVLink");
     }
 }
@@ -271,7 +288,7 @@ static void submit_authentication(const mavlink_message_t *message)
 // MAVLink messages, so each entry is decoded with the OpenDroneID core decoders
 // and translated into a store update. Encoded values are already physical units,
 // matching what the encoder writes back out, so no MAVLink-style scaling applies.
-static void apply_odid_encoded_message(const uint8_t raw[ODID_MESSAGE_SIZE])
+static void apply_odid_encoded_message(const mavlink_message_t *message, const uint8_t raw[ODID_MESSAGE_SIZE])
 {
     uint8_t type = raw[0] >> 4;
     remoteid_store_update_t update = { 0 };
@@ -292,7 +309,7 @@ static void apply_odid_encoded_message(const uint8_t raw[ODID_MESSAGE_SIZE])
         ODID_Location_encoded enc;
         ODID_Location_data data;
         memcpy(&enc, raw, sizeof(enc));
-        if (decodeLocationMessage(&data, &enc) != ODID_SUCCESS) {
+        if (!location_source_allowed(message) || decodeLocationMessage(&data, &enc) != ODID_SUCCESS) {
             return;
         }
         update.type = REMOTEID_STORE_UPDATE_LOCATION;
@@ -403,7 +420,7 @@ static void handle_message_pack(const mavlink_message_t *message)
     }
 
     for (uint8_t i = 0; i < pack.msg_pack_size; i++) {
-        apply_odid_encoded_message(&pack.messages[i * ODID_MESSAGE_SIZE]);
+        apply_odid_encoded_message(message, &pack.messages[i * ODID_MESSAGE_SIZE]);
     }
 }
 
@@ -613,9 +630,11 @@ static void remoteid_mavlink_status_task(void *arg)
 
 #if CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
 
-// Keep the operator location compliant locally: republish a fixed operator
-// location toward the autopilot at a steady cadence (so it survives the GCS
-// disconnecting), and expire a live operator location when its GCS stream stops.
+// Keep a fixed operator location fresh on the autopilot: republish it at a
+// steady cadence so it survives the GCS disconnecting. A live location is
+// GCS-owned and never republished (the store expires it). Neither is a take-off
+// point that replaced an expired live location: republishing it would come back
+// through the autopilot as a fresh "live" position.
 static void remoteid_mavlink_operator_location_task(void *arg)
 {
     (void)arg;
@@ -624,18 +643,10 @@ static void remoteid_mavlink_operator_location_task(void *arg)
 
     while (true) {
         remoteid_state_t snap;
-        if (remoteid_store_get_snapshot(&snap) == ESP_OK && snap.has_operator_position) {
-            if (snap.operator_location_type == ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS) {
-                // Live location is GCS-owned; never republish, only expire it.
-                uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-                uint32_t age_ms = now_ms - snap.operator_position_updated_ms;
-                if (age_ms > CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_EXPIRY_MS) {
-                    remoteid_store_update_t expire = { .type = REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE };
-                    if (remoteid_store_submit(&expire, pdMS_TO_TICKS(100)) == ESP_OK) {
-                        ESP_LOGW(TAG, "live operator location stale (%u ms), expiring", (unsigned)age_ms);
-                    }
-                }
-            } else if (remoteid_clock_is_synced()) {
+        if (remoteid_store_get_snapshot(&snap) == ESP_OK && snap.has_operator_position &&
+            snap.operator_location_type != ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS &&
+            !snap.operator_position_expired) {
+            if (remoteid_clock_is_synced()) {
                 // Fixed/takeoff location: keep it fresh toward the autopilot.
                 int32_t lat = (int32_t)lround(snap.operator_latitude  * 1e7);
                 int32_t lon = (int32_t)lround(snap.operator_longitude * 1e7);
@@ -708,9 +719,8 @@ esp_err_t remoteid_mavlink_start(void)
         ESP_LOGE(TAG, "failed to create MAVLink operator-location loop task");
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "MAVLink operator-location loop enabled (%d ms republish, %d ms expiry)",
-             CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_PERIOD_MS,
-             CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_EXPIRY_MS);
+    ESP_LOGI(TAG, "MAVLink operator-location loop enabled (%d ms republish)",
+             CONFIG_REMOTEID_MAVLINK_OPERATOR_LOCATION_PERIOD_MS);
 #endif
 
     return ESP_OK;

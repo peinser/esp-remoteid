@@ -121,7 +121,10 @@ static indicator_mode_t current_mode(void)
         return INDICATOR_MODE_OTA;
     }
     remoteid_health_t health = remoteid_store_health();
-    if (atomic_load_explicit(&s_error, memory_order_acquire) || health == REMOTEID_HEALTH_SELFTEST_FAILED) {
+    // A rejected identity is an error for the operator to fix (EU 2019/945
+    // requires an error message when the operator ID fails its check).
+    if (atomic_load_explicit(&s_error, memory_order_acquire) || health == REMOTEID_HEALTH_SELFTEST_FAILED ||
+        health == REMOTEID_HEALTH_OPERATOR_ID_REJECTED || health == REMOTEID_HEALTH_INVALID_SERIAL) {
         return INDICATOR_MODE_ERROR;
     }
     // Operational only with identity, running transports and (for a runtime

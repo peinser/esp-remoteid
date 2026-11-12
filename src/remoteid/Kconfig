@@ -16,11 +16,11 @@ config REMOTEID_TRANSPORT_BLE5_LONG_RANGE
         data rate and is a separate transport from BLE 4 legacy advertising.
         Both can be enabled simultaneously.
 
-        Disabled by default: EU regulation 2019/945 only recognises BLE 4
-        legacy advertising and Wi-Fi Beacon as approved DRI transports. BLE 5
-        Extended Advertising is defined in ASTM F3411-22a (referenced by FAA
-        14 CFR Part 89) but is not listed in the EU delegated regulation, so a
-        BLE 5 only configuration is not compliant in the EU.
+        Disabled by default. EU regulation 2019/945 does not list transports;
+        it requires a broadcast that "can be received directly by existing
+        mobile devices". Most phones cannot receive LE Coded PHY, so never use
+        BLE 5 Long Range on its own in the EU: keep BLE 4 legacy (or Wi-Fi)
+        enabled alongside it.
 
         Most current receiver apps do not yet support BLE 5 Long Range. Enable
         alongside BLE 4 for extended range, or alone when operating under FAA
@@ -96,10 +96,12 @@ config REMOTEID_OPERATOR_ID
 
 config REMOTEID_COMPLIANCE_STRICT
     bool "Strict EU (EASA) compliance mode"
+    depends on REMOTEID_MAVLINK_INPUT || REMOTEID_DRONECAN_INPUT
     default n
     help
         Enforce the EU direct remote identification rules (Regulation (EU)
-        2019/945, Part 6 of the Annex) at runtime:
+        2019/945, Part 6 of the Annex) at runtime. Needs a live position
+        source (MAVLink or DroneCAN input).
 
         - The UAS ID is an ANSI/CTA-2063-A serial number configured at build
           time. Basic ID messages from MAVLink or DroneCAN are ignored, so it
@@ -108,7 +110,14 @@ config REMOTEID_COMPLIANCE_STRICT
           reports the failure to the autopilot.
         - The operator ID must be the full EU registration number with its 3
           secret characters. The checksum is verified and only the 16 public
-          characters are stored and broadcast.
+          characters are stored and broadcast. A failed check is reported to
+          the operator until a valid number is uploaded.
+        - The aircraft Location is taken only from the bound autopilot (MAVLink)
+          or the bound node (DroneCAN), never from a ground station, and the
+          device is only ready to arm with a fresh Location that has a
+          position, a height and a time stamp.
+        - No fixed configured position, no start-up delay, and the OTA server
+          only with Secure Boot (signed images).
 
         A production device also needs Secure Boot and flash encryption, and
         no unauthenticated OTA access, so the serial cannot be changed by
@@ -120,6 +129,7 @@ config REMOTEID_COMPLIANCE_STRICT
 
 config REMOTEID_STARTUP_DELAY_MS
     int "Startup delay before transmissions (ms)"
+    depends on !REMOTEID_COMPLIANCE_STRICT
     default 10000
     range 0 60000
     help
@@ -320,9 +330,9 @@ config REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
         Keep the OpenDroneID operator location fresh on the aircraft without the
         GCS staying connected. For a fixed operator location (FIXED/TAKEOFF) the
         firmware periodically transmits OPEN_DRONE_ID_SYSTEM_UPDATE (broadcast
-        target 0/0) to the autopilot. For a live (LIVE_GNSS) operator location it
-        only consumes the GCS stream and expires it when updates stop. The send
-        timestamp is seeded from MAVLink SYSTEM_TIME. Requires an outbound MAVLink
+        target 0/0) to the autopilot. A live (LIVE_GNSS) operator location is
+        never republished; it expires as set by "Live operator-location expiry".
+        The send timestamp is seeded from MAVLink SYSTEM_TIME. Requires an outbound MAVLink
         path: the TX GPIO on the UART transport, or USB Serial/JTAG (inherent).
         Operator-location status is reported via ARM_STATUS only when status
         output is also enabled.
@@ -337,17 +347,21 @@ config REMOTEID_MAVLINK_OPERATOR_LOCATION_PERIOD_MS
         Interval between OPEN_DRONE_ID_SYSTEM_UPDATE transmissions when a fixed
         operator location is active. 2000 ms (0.5 Hz) mirrors a typical GCS.
 
-config REMOTEID_MAVLINK_OPERATOR_LOCATION_EXPIRY_MS
-    int "Live operator-location expiry (ms)"
-    default 10000
-    range 1000 60000
-    help
-        For a live (LIVE_GNSS) operator location, drop it as stale if no
-        SYSTEM/SYSTEM_UPDATE refresh arrives within this window.
-
 endif # REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
 
 endif # REMOTEID_MAVLINK_INPUT
+
+config REMOTEID_OPERATOR_LOCATION_EXPIRY_MS
+    int "Live operator-location expiry (ms)"
+    depends on REMOTEID_MAVLINK_INPUT || REMOTEID_DRONECAN_INPUT
+    default 10000
+    range 1000 60000
+    help
+        A live (LIVE_GNSS) operator location whose source timestamp has not
+        advanced within this window is stale. It is then replaced by the
+        take-off point captured at arming (EU 2019/945: the position of the
+        remote pilot or, if not available, the take-off point), or dropped
+        when there is none. Only a newer source timestamp restores it.
 
 config REMOTEID_DRONECAN_INPUT
     bool "Enable DroneCAN (ArduPilot OpenDroneID over CAN)"
@@ -516,6 +530,7 @@ endchoice
 
 config REMOTEID_HAS_POSITION
     bool "Broadcast a known takeoff position"
+    depends on !REMOTEID_COMPLIANCE_STRICT
     default n
     help
         Enable to broadcast a configured static position in the Location
@@ -743,6 +758,7 @@ menu "OTA update server"
 
 config REMOTEID_OTA_ENABLE
     bool "Enable OTA update server"
+    depends on !REMOTEID_COMPLIANCE_STRICT || SECURE_BOOT
     default n
     help
         When triggered, the device starts a Wi-Fi access point and a lightweight

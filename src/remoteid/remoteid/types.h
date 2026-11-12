@@ -68,6 +68,16 @@ typedef struct remoteid_state {
     // operator location still expires when the GCS stops sending.
     uint32_t operator_position_timestamp;
     uint32_t operator_position_updated_ms;
+    // Set when a live operator position expired and was replaced by the
+    // take-off point (or cleared). Only a newer source timestamp ends it, so a
+    // relay repeating its cached SYSTEM cannot bring the stale position back.
+    bool operator_position_expired;
+    // Take-off point captured at arming: the operator position when no other
+    // is available (EU 2019/945: "or, if not available, the take-off point").
+    bool has_takeoff_position;
+    double takeoff_latitude;
+    double takeoff_longitude;
+    float takeoff_altitude_geo_m;
 
     // Self ID
     bool has_self_id;

@@ -25,6 +25,10 @@
 #define REMOTEID_ADV_INTERVAL_100_MS 0x00a0
 // One full advertising window per auth page: enough for one transmission on all 3 channels.
 #define REMOTEID_BLE_AUTH_PAGE_INTERVAL_MS 100
+// HCI Advertising_TX_Power 127: the host has no preference, so the controller
+// uses the level set with esp_ble_tx_power_set(). A zero-initialised field
+// would instead request 0 dBm for the advertising set.
+#define REMOTEID_BLE_TX_POWER_NO_PREFERENCE 127
 
 #ifndef CONFIG_REMOTEID_BLE_TX_INTERVAL_MS
 #define CONFIG_REMOTEID_BLE_TX_INTERVAL_MS 250
@@ -144,6 +148,7 @@ typedef struct {
     // Set at the page 0 slot; pages 1..N of the same set follow later in the cycle.
     int                       auth_last_page;
     uint8_t                   tx_failures;
+    remoteid_transport_t      transport;
 } ble_transport_ctx_t;
 
 // Count consecutive failures; a run of them latches a Remote ID system failure.
@@ -151,6 +156,7 @@ static void record_tx_result(ble_transport_ctx_t *ctx, bool ok)
 {
     if (ok) {
         ctx->tx_failures = 0;
+        remoteid_selftest_transmitted(ctx->transport);
         return;
     }
     if (++ctx->tx_failures == REMOTEID_BLE_TX_FAILURE_LIMIT) {
@@ -213,6 +219,7 @@ static void remoteid_ble_transport_task(void *arg)
         if (!remoteid_store_is_ready()) {
             ble_gap_ext_adv_stop(ctx->instance);
             ctx->started = false;
+            remoteid_selftest_paused(ctx->transport);
             ESP_LOGW(TAG, "%s transport paused until Remote ID identity is ready", ctx->label);
             ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
             last_wake = xTaskGetTickCount();
@@ -277,7 +284,8 @@ static void remoteid_ble_transport_task(void *arg)
 // when BLE5 is also active it takes instance 1.
 #define BLE4_LEGACY_ADV_INSTANCE 0
 
-static ble_transport_ctx_t s_ble4_ctx = { .instance = BLE4_LEGACY_ADV_INSTANCE, .label = "BLE4", .auth_last_page = -1 };
+static ble_transport_ctx_t s_ble4_ctx = { .instance = BLE4_LEGACY_ADV_INSTANCE, .label = "BLE4",
+                                          .auth_last_page = -1, .transport = REMOTEID_TRANSPORT_BLE4 };
 
 static esp_err_t configure_ble4_legacy(void)
 {
@@ -291,14 +299,17 @@ static esp_err_t configure_ble4_legacy(void)
         .itvl_min      = REMOTEID_ADV_INTERVAL_100_MS,
         .itvl_max      = REMOTEID_ADV_INTERVAL_100_MS,
         .channel_map   = BLE_GAP_ADV_DFLT_CHANNEL_MAP,
+        .tx_power      = REMOTEID_BLE_TX_POWER_NO_PREFERENCE,
     };
 
-    int rc = ble_gap_ext_adv_configure(BLE4_LEGACY_ADV_INSTANCE, &params, NULL, NULL, NULL);
+    int8_t selected_tx_power;
+    int rc = ble_gap_ext_adv_configure(BLE4_LEGACY_ADV_INSTANCE, &params, &selected_tx_power, NULL, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "failed to configure BLE4 legacy ext adv instance: %d", rc);
         return ESP_FAIL;
     }
     s_ble4_ctx.started = false; // a host reset stops advertising; the task restarts it
+    ESP_LOGI(TAG, "BLE4 legacy advertising TX power: %d dBm", selected_tx_power);
 
     static bool task_created;
     if (task_created) {
@@ -326,7 +337,8 @@ static esp_err_t configure_ble4_legacy(void)
 #define BLE5_LR_ADV_INSTANCE 0
 #endif
 
-static ble_transport_ctx_t s_ble5_ctx = { .instance = BLE5_LR_ADV_INSTANCE, .label = "BLE5", .auth_last_page = -1 };
+static ble_transport_ctx_t s_ble5_ctx = { .instance = BLE5_LR_ADV_INSTANCE, .label = "BLE5",
+                                          .auth_last_page = -1, .transport = REMOTEID_TRANSPORT_BLE5 };
 
 static esp_err_t configure_ble5_lr(void)
 {
@@ -341,14 +353,17 @@ static esp_err_t configure_ble5_lr(void)
         .itvl_min      = REMOTEID_ADV_INTERVAL_100_MS,
         .itvl_max      = REMOTEID_ADV_INTERVAL_100_MS,
         .channel_map   = BLE_GAP_ADV_DFLT_CHANNEL_MAP,
+        .tx_power      = REMOTEID_BLE_TX_POWER_NO_PREFERENCE,
     };
 
-    int rc = ble_gap_ext_adv_configure(BLE5_LR_ADV_INSTANCE, &params, NULL, NULL, NULL);
+    int8_t selected_tx_power;
+    int rc = ble_gap_ext_adv_configure(BLE5_LR_ADV_INSTANCE, &params, &selected_tx_power, NULL, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "failed to configure BLE5 Long Range ext adv instance: %d", rc);
         return ESP_FAIL;
     }
     s_ble5_ctx.started = false; // a host reset stops advertising; the task restarts it
+    ESP_LOGI(TAG, "BLE5 Long Range advertising TX power: %d dBm", selected_tx_power);
 
     static bool task_created;
     if (task_created) {

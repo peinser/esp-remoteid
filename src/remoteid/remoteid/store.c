@@ -33,6 +33,10 @@
 // takeoff position. Location is a 1 Hz message, so 3 s allows two lost updates.
 #define REMOTEID_LOCATION_FRESH_MS 3000
 
+#ifndef CONFIG_REMOTEID_OPERATOR_LOCATION_EXPIRY_MS
+#define CONFIG_REMOTEID_OPERATOR_LOCATION_EXPIRY_MS 10000
+#endif
+
 #define REMOTEID_STORE_READY_BIT BIT0
 #define REMOTEID_STORE_QUEUE_LEN 8
 
@@ -47,6 +51,10 @@ static bool s_operator_id_valid;
 // Set when a serial-typed UAS ID failed ANSI/CTA-2063-A validation, so the health
 // reason stays specific even after a bad serial is cleared in compliance mode.
 static bool s_serial_invalid;
+// Set when an operator ID failed the consistency check, until a valid one is
+// accepted. EU 2019/945 requires an error message to the operator; it is
+// reported through ARM_STATUS / ArmStatus and the error indicator.
+static bool s_operator_id_rejected;
 // Latched when the self-test fails: broadcast status is forced to system-failure
 // and arming is blocked.
 static bool s_selftest_failed;
@@ -266,18 +274,67 @@ static bool location_is_fresh_locked(void)
            now_ms() - s_state.location_updated_ms <= REMOTEID_LOCATION_FRESH_MS;
 }
 
+// EU 2019/945 data (iii): time stamp, position and height above the surface or
+// take-off point. Speed and course may legitimately be unknown when stationary.
+static bool location_is_complete_locked(void)
+{
+    return s_state.has_position && s_state.height > (float)INV_ALT && s_state.timestamp >= 0.0f;
+}
+
 // Age the operator position by its source timestamp, not by receipt: only a
 // newer source timestamp counts as a refresh, so an autopilot that keeps
 // relaying a cached SYSTEM / SYSTEM_UPDATE cannot keep a live location fresh.
+// A source without time (timestamp 0) can only be aged by receipt.
 static void refresh_operator_position_age_locked(uint32_t source_timestamp)
 {
     if (!s_state.has_operator_position) {
         return;
     }
-    if (source_timestamp > s_state.operator_position_timestamp) {
+    if (source_timestamp == 0 || source_timestamp > s_state.operator_position_timestamp) {
         s_state.operator_position_timestamp  = source_timestamp;
         s_state.operator_position_updated_ms = now_ms();
     }
+}
+
+// The operator position is the take-off point when no other is available.
+static void use_takeoff_point_locked(void)
+{
+    s_state.has_operator_position   = true;
+    s_state.operator_latitude       = s_state.takeoff_latitude;
+    s_state.operator_longitude      = s_state.takeoff_longitude;
+    s_state.operator_altitude_geo_m = s_state.takeoff_altitude_geo_m;
+    s_state.operator_location_type  = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
+}
+
+// A live (LIVE_GNSS) operator position whose source timestamp has not advanced
+// within the expiry window is stale: fall back to the take-off point, or drop it.
+// Checked on every Location update, which arrives at least once per second.
+static void expire_live_operator_position_locked(void)
+{
+    if (!s_state.has_operator_position ||
+        s_state.operator_location_type != ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS ||
+        now_ms() - s_state.operator_position_updated_ms <= CONFIG_REMOTEID_OPERATOR_LOCATION_EXPIRY_MS) {
+        return;
+    }
+    s_state.operator_position_expired = true;
+    if (s_state.has_takeoff_position) {
+        use_takeoff_point_locked();
+        ESP_LOGW(TAG, "live operator position stale, broadcasting the take-off point");
+    } else {
+        s_state.has_operator_position = false;
+        ESP_LOGW(TAG, "live operator position stale and no take-off point, cleared");
+    }
+}
+
+// After an expiry only a newer source timestamp may replace the operator
+// position; a relay repeating its cached SYSTEM / SYSTEM_UPDATE is ignored.
+static bool operator_position_update_allowed_locked(uint32_t source_timestamp)
+{
+    if (s_state.operator_position_expired && source_timestamp <= s_state.operator_position_timestamp) {
+        return false;
+    }
+    s_state.operator_position_expired = false;
+    return true;
 }
 
 // Apply one update to s_state. Returns false when the update is rejected, in
@@ -286,6 +343,10 @@ static bool apply_update_locked(remoteid_store_update_t *update)
 {
     switch (update->type) {
     case REMOTEID_STORE_UPDATE_BASIC_ID:
+        if (update->data.basic_id.id_type == ODID_IDTYPE_NONE &&
+            !binary_field_is_set(update->data.basic_id.uas_id, ODID_ID_SIZE)) {
+            return true; // nothing provided yet (ArduPilot sends an empty Basic ID until it has one)
+        }
 #if CONFIG_REMOTEID_COMPLIANCE_STRICT
         // EU 2019/945: the serial number of the Remote ID system cannot be
         // modified by the user, so it is only the one configured at build time.
@@ -306,10 +367,17 @@ static bool apply_update_locked(remoteid_store_update_t *update)
                  s_basic_id_valid, s_serial_invalid);
         break;
     case REMOTEID_STORE_UPDATE_OPERATOR_ID:
+        if (update->data.operator_id.operator_id[0] == '\0') {
+            return true; // nothing provided yet (ArduPilot sends an empty Operator ID until it has one)
+        }
         if (!normalize_operator_id(update->data.operator_id.operator_id)) {
-            ESP_LOGW(TAG, "rejected Operator ID: empty or malformed");
+            if (!s_operator_id_rejected) { // sources repeat it every few seconds: log once
+                ESP_LOGE(TAG, "rejected Operator ID: failed the consistency check");
+            }
+            s_operator_id_rejected = true;
             return false;
         }
+        s_operator_id_rejected = false;
         strlcpy(s_state.operator_id, update->data.operator_id.operator_id, sizeof(s_state.operator_id));
         s_operator_id_valid = operator_id_is_usable(&s_state);
         ESP_LOGI(TAG, "updated Operator ID from input source (valid=%d)", s_operator_id_valid);
@@ -345,38 +413,49 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         s_state.ts_acc            = ts_acc;
         s_state.timestamp         = timestamp;
         s_state.location_updated_ms = now_ms();
+        expire_live_operator_position_locked();
         ESP_LOGD(TAG, "updated Location from input source (has_position=%d status=%d)",
                  s_state.has_position, s_state.status);
         break;
     }
     case REMOTEID_STORE_UPDATE_SYSTEM:
-        s_state.has_operator_position    = update->data.system.has_operator_position;
-        s_state.operator_latitude        = update->data.system.operator_latitude;
-        s_state.operator_longitude       = update->data.system.operator_longitude;
-        s_state.operator_altitude_geo_m  = update->data.system.operator_altitude_geo_m;
-        s_state.operator_location_type   = update->data.system.operator_location_type;
+        // A System without an operator position (0, 0) carries none: ArduPilot
+        // sends that until the ground station provides one. It must not erase
+        // the take-off point captured at arming.
+        if (update->data.system.has_operator_position &&
+            operator_position_update_allowed_locked(update->data.system.timestamp)) {
+            s_state.has_operator_position   = true;
+            s_state.operator_latitude       = update->data.system.operator_latitude;
+            s_state.operator_longitude      = update->data.system.operator_longitude;
+            s_state.operator_altitude_geo_m = update->data.system.operator_altitude_geo_m;
+            s_state.operator_location_type  = update->data.system.operator_location_type;
+            refresh_operator_position_age_locked(update->data.system.timestamp);
+        }
         s_state.area_count               = update->data.system.area_count;
         s_state.area_radius              = update->data.system.area_radius;
         s_state.area_ceiling_m           = update->data.system.area_ceiling_m;
         s_state.area_floor_m             = update->data.system.area_floor_m;
-        s_state.classification_type      = update->data.system.classification_type;
-        s_state.eu_category              = update->data.system.eu_category;
-        s_state.eu_class                 = update->data.system.eu_class;
-        refresh_operator_position_age_locked(update->data.system.timestamp);
+        // An undeclared classification carries no category or class (again a
+        // zero-filled System); it must not replace the configured EU values.
+        if (update->data.system.classification_type != ODID_CLASSIFICATION_TYPE_UNDECLARED) {
+            s_state.classification_type = update->data.system.classification_type;
+            s_state.eu_category         = update->data.system.eu_category;
+            s_state.eu_class            = update->data.system.eu_class;
+        }
         ESP_LOGD(TAG, "updated System from input source");
         break;
     case REMOTEID_STORE_UPDATE_SYSTEM_UPDATE:
-        s_state.has_operator_position    = update->data.system_update.has_operator_position;
+        if (!update->data.system_update.has_operator_position ||
+            !operator_position_update_allowed_locked(update->data.system_update.timestamp)) {
+            break;
+        }
+        s_state.has_operator_position    = true;
         s_state.operator_latitude        = update->data.system_update.operator_latitude;
         s_state.operator_longitude       = update->data.system_update.operator_longitude;
         s_state.operator_altitude_geo_m  = update->data.system_update.operator_altitude_geo_m;
         refresh_operator_position_age_locked(update->data.system_update.timestamp);
         ESP_LOGD(TAG, "updated operator position from System Update (has_position=%d)",
                  s_state.has_operator_position);
-        break;
-    case REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE:
-        s_state.has_operator_position = false;
-        ESP_LOGW(TAG, "operator position expired and cleared");
         break;
     case REMOTEID_STORE_UPDATE_SELFTEST_FAILED:
         s_selftest_failed = true;
@@ -442,22 +521,23 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         break;
     }
     case REMOTEID_STORE_UPDATE_TAKEOFF:
+        if (!s_state.has_position || !location_is_fresh_locked()) {
+            ESP_LOGW(TAG, "arm detected but no fresh position, take-off point not captured");
+            break;
+        }
+        s_state.has_takeoff_position   = true;
+        s_state.takeoff_latitude       = s_state.latitude;
+        s_state.takeoff_longitude      = s_state.longitude;
+        s_state.takeoff_altitude_geo_m = s_state.altitude_geo_m;
+        ESP_LOGI(TAG, "take-off point captured: %.6f, %.6f @ %.1f m",
+                 s_state.takeoff_latitude, s_state.takeoff_longitude, s_state.takeoff_altitude_geo_m);
         if (s_state.has_operator_position &&
             s_state.operator_location_type != ODID_OPERATOR_LOCATION_TYPE_TAKEOFF) {
-            ESP_LOGI(TAG, "arm detected, keeping the source-supplied operator location");
-        } else if (!s_state.has_position || !location_is_fresh_locked()) {
-            ESP_LOGW(TAG, "arm detected but no fresh position, takeoff position not captured");
+            ESP_LOGI(TAG, "keeping the source-supplied operator position");
         } else {
-            s_state.has_operator_position   = true;
-            s_state.operator_latitude       = s_state.latitude;
-            s_state.operator_longitude      = s_state.longitude;
-            s_state.operator_altitude_geo_m = s_state.altitude_geo_m;
-            s_state.operator_location_type  = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
+            use_takeoff_point_locked();
             s_state.operator_position_timestamp  = remoteid_clock_odid_2019();
             s_state.operator_position_updated_ms = now_ms();
-            ESP_LOGI(TAG, "takeoff position set: %.6f, %.6f @ %.1f m",
-                     s_state.operator_latitude, s_state.operator_longitude,
-                     s_state.operator_altitude_geo_m);
         }
         break;
     }
@@ -527,6 +607,9 @@ esp_err_t remoteid_store_start(const remoteid_state_t *initial_state)
         memset(s_state.uas_id, 0, sizeof(s_state.uas_id));
     }
     if (!normalize_operator_id(s_state.operator_id)) {
+        // An empty ID or the placeholder is "not set"; anything else failed the check.
+        s_operator_id_rejected = s_state.operator_id[0] != '\0' &&
+                                 strncmp(s_state.operator_id, "CHANGE_ME_OP_ID", ODID_ID_SIZE) != 0;
         memset(s_state.operator_id, 0, sizeof(s_state.operator_id));
     }
     apply_basic_id_validity_locked();
@@ -600,12 +683,16 @@ remoteid_health_t remoteid_store_health(void)
         health = REMOTEID_HEALTH_INVALID_SERIAL;   // specific reason beats generic
     } else if (!s_basic_id_valid) {
         health = REMOTEID_HEALTH_WAITING_BASIC_ID;
+    } else if (s_operator_id_rejected) {
+        health = REMOTEID_HEALTH_OPERATOR_ID_REJECTED;
     } else if (!s_operator_id_valid) {
         health = REMOTEID_HEALTH_WAITING_OPERATOR_ID;
     } else if (!remoteid_selftest_ok()) {
         health = REMOTEID_HEALTH_TRANSPORTS_NOT_RUNNING;
     } else if (REMOTEID_RUNTIME_LOCATION && !location_is_fresh_locked()) {
         health = REMOTEID_HEALTH_LOCATION_STALE;
+    } else if (CONFIG_REMOTEID_COMPLIANCE_STRICT && !location_is_complete_locked()) {
+        health = REMOTEID_HEALTH_LOCATION_INCOMPLETE;
     } else {
         health = REMOTEID_HEALTH_OK;
     }
@@ -623,6 +710,8 @@ const char *remoteid_store_health_text(remoteid_health_t health)
     case REMOTEID_HEALTH_WAITING_BASIC_ID:       return "UAS ID not set";
     case REMOTEID_HEALTH_TRANSPORTS_NOT_RUNNING: return "Remote ID transmitters not running";
     case REMOTEID_HEALTH_LOCATION_STALE:         return "No fresh aircraft location";
+    case REMOTEID_HEALTH_OPERATOR_ID_REJECTED:   return "Operator ID failed consistency check";
+    case REMOTEID_HEALTH_LOCATION_INCOMPLETE:    return "No aircraft position, height or time";
     }
     return "Remote ID not ready";
 }

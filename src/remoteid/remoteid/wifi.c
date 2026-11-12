@@ -70,14 +70,15 @@ static uint16_t beacon_interval_tu(void)
 #endif
 
 // Count consecutive failures; a run of them latches a Remote ID system failure.
-static void record_tx_result(const char *transport, uint8_t *failures, bool ok)
+static void record_tx_result(remoteid_transport_t transport, const char *name, uint8_t *failures, bool ok)
 {
     if (ok) {
         *failures = 0;
+        remoteid_selftest_transmitted(transport);
         return;
     }
     if (++*failures == REMOTEID_WIFI_TX_FAILURE_LIMIT) {
-        remoteid_selftest_report(transport, false);
+        remoteid_selftest_report(name, false);
     }
 }
 
@@ -257,12 +258,13 @@ static void remoteid_wifi_beacon_task(void *arg)
     while (true) {
         if (!remoteid_store_is_ready()) {
             ESP_LOGW(TAG, "Wi-Fi Beacon transport paused until Remote ID identity is ready again");
+            remoteid_selftest_paused(REMOTEID_TRANSPORT_WIFI_BEACON);
             ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
             last_wake = xTaskGetTickCount();
         }
 
         bool ok = send_remoteid_beacon() == ESP_OK;
-        record_tx_result("Wi-Fi Beacon", &failures, ok);
+        record_tx_result(REMOTEID_TRANSPORT_WIFI_BEACON, "Wi-Fi Beacon", &failures, ok);
         if (ok) {
             ESP_LOGD(TAG, "transmitted OpenDroneID Wi-Fi Beacon");
         }
@@ -287,12 +289,13 @@ static void remoteid_wifi_nan_task(void *arg)
     while (true) {
         if (!remoteid_store_is_ready()) {
             ESP_LOGW(TAG, "Wi-Fi NAN transport paused until Remote ID identity is ready again");
+            remoteid_selftest_paused(REMOTEID_TRANSPORT_WIFI_NAN);
             ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
             last_wake = xTaskGetTickCount();
         }
 
         bool ok = send_remoteid_nan() == ESP_OK;
-        record_tx_result("Wi-Fi NAN", &failures, ok);
+        record_tx_result(REMOTEID_TRANSPORT_WIFI_NAN, "Wi-Fi NAN", &failures, ok);
         if (ok) {
             ESP_LOGD(TAG, "transmitted OpenDroneID Wi-Fi NAN");
         }

@@ -14,8 +14,6 @@ typedef enum remoteid_store_update_type {
     // Operator position only, from OPEN_DRONE_ID_SYSTEM_UPDATE. Leaves the
     // category/classification/area fields from the last full System untouched.
     REMOTEID_STORE_UPDATE_SYSTEM_UPDATE,
-    // Drop a stale live operator position. Carries no payload.
-    REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE,
     // Self-test failed: latch a Remote ID system-failure. Carries no payload.
     REMOTEID_STORE_UPDATE_SELFTEST_FAILED,
     // Autopilot emergency state, derived from HEARTBEAT system_status. Latched
@@ -25,9 +23,9 @@ typedef enum remoteid_store_update_type {
     // A single received Authentication page. The store accumulates pages and
     // marks external auth ready once 0..LastPageIndex have all arrived.
     REMOTEID_STORE_UPDATE_AUTH,
-    // Vehicle armed: use the current location as the takeoff operator position.
-    // Carries no payload. Ignored when the location is stale, or when a source
-    // already supplies a live or fixed operator location.
+    // Vehicle armed: record the current location as the take-off point and use
+    // it as the operator position unless a source supplies a live or fixed one.
+    // Carries no payload. Ignored when the location is stale.
     REMOTEID_STORE_UPDATE_TAKEOFF,
 } remoteid_store_update_type_t;
 
@@ -109,6 +107,11 @@ typedef enum remoteid_health {
     REMOTEID_HEALTH_TRANSPORTS_NOT_RUNNING,
     // A runtime position source is configured but no fresh Location arrived.
     REMOTEID_HEALTH_LOCATION_STALE,
+    // An operator ID failed the consistency check (EU 2019/945: the operator
+    // gets an error message). Cleared by the next valid operator ID.
+    REMOTEID_HEALTH_OPERATOR_ID_REJECTED,
+    // Strict mode: the fresh Location lacks the mandatory position, height or time.
+    REMOTEID_HEALTH_LOCATION_INCOMPLETE,
 } remoteid_health_t;
 
 esp_err_t remoteid_store_start(const remoteid_state_t *initial_state);

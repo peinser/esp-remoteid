@@ -20,15 +20,21 @@
 
 static const char *TAG = "remoteid_main";
 
+// Hidden in strict compliance mode: a module that reboots in flight must resume
+// broadcasting at once.
 #ifndef CONFIG_REMOTEID_STARTUP_DELAY_MS
-#define CONFIG_REMOTEID_STARTUP_DELAY_MS 10000
+#define CONFIG_REMOTEID_STARTUP_DELAY_MS 0
 #endif
 
 void app_main(void)
 {
     static remoteid_state_t state;
 
-    ESP_ERROR_CHECK(indicator_init());
+    // The status LED and lights are not part of Remote ID: a failure is logged
+    // instead of stopping the broadcast in a boot loop.
+    if (indicator_init() != ESP_OK) {
+        ESP_LOGE(TAG, "status indicator failed to start");
+    }
     // NVS is not erased on failure: it holds the provisioned signing key. The
     // fault is reported and the device keeps broadcasting.
     remoteid_selftest_report("NVS", nvs_flash_init() == ESP_OK);
@@ -36,7 +42,16 @@ void app_main(void)
     ESP_ERROR_CHECK(remoteid_ota_check_and_run());
     ESP_ERROR_CHECK(remoteid_model_init(&state));
     ESP_ERROR_CHECK(remoteid_store_start(&state));
-    ESP_ERROR_CHECK(lighting_init());
+    if (lighting_init() != ESP_OK) {
+        ESP_LOGE(TAG, "lighting outputs failed to start");
+    }
+
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT && !(CONFIG_SECURE_BOOT && CONFIG_SECURE_FLASH_ENC_ENABLED)
+    // EU 2019/945 asks to reduce the ability to tamper; without both, the serial
+    // number and position handling can be changed by reflashing the module.
+    ESP_LOGW(TAG, "strict compliance build without Secure Boot and flash encryption: "
+                  "not tamper-resistant, do not use for operation");
+#endif
 
     // From here on, failures are reported to the self-test (error indicator,
     // system-failure status, arming blocked) instead of aborting into a boot
