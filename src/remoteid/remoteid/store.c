@@ -1,6 +1,7 @@
 #include "store.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <string.h>
 
 #include "encode.h"
@@ -13,7 +14,6 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
-#include "clock.h"
 #include "indicator.h"
 #include "lighting.h"
 #include "selftest.h"
@@ -283,9 +283,62 @@ static bool location_is_fresh_locked(void)
            now_ms() - s_state.location_updated_ms <= REMOTEID_LOCATION_FRESH_MS;
 }
 
+// A timed Location sample may be ahead of the previous one by the local time
+// elapsed between their arrivals plus this much (link and queue jitter).
+#define REMOTEID_LOCATION_TIME_TOLERANCE_S 5.0f
+// Consecutive rejected samples that move forward among themselves after which
+// the source's new time is adopted: its clock stepped back (rare with GNSS time,
+// but otherwise the broadcast would freeze for up to an hour).
+#define REMOTEID_LOCATION_RESYNC_SAMPLES 5
+
 // Below this ground speed a GNSS course is not meaningful, so an unknown course
 // is accepted; above it the course is mandatory.
 #define REMOTEID_COURSE_MIN_SPEED_M_S 0.5f
+
+// Whether `later` follows `earlier` (both seconds after the UTC hour) when the
+// local time `elapsed_ms` passed between their arrivals: ahead, across the
+// rollover at the full hour, and by no more than the elapsed time allows.
+static bool timestamp_follows(float earlier, float later, uint32_t elapsed_ms)
+{
+    float ahead = fmodf(later - earlier + (float)MAX_TIMESTAMP, (float)MAX_TIMESTAMP);
+    return ahead > 0.0f && ahead <= (float)elapsed_ms / 1000.0f + REMOTEID_LOCATION_TIME_TOLERANCE_S;
+}
+
+// Whether a Location sample with a source time stamp is new and in order. A
+// repeated (cached) sample, one behind the last accepted one, and alternating
+// old samples are rejected whole, so they replace neither the broadcast data nor
+// the order watermark. Only a run of rejected samples that keep moving forward
+// is adopted as the source's new time, which a repeated or alternating replay
+// never forms. Not detectable without an independent clock: a relay replaying a
+// cycle of REMOTEID_LOCATION_RESYNC_SAMPLES or more old samples.
+static bool location_sample_in_order_locked(float timestamp)
+{
+    static float s_rejected_timestamp;
+    static uint32_t s_rejected_ms;
+    static int s_rejected_run;
+
+    uint32_t now = now_ms();
+    if (s_state.location_sample_timestamp < 0.0f ||
+        timestamp_follows(s_state.location_sample_timestamp, timestamp, now - s_state.location_updated_ms)) {
+        s_rejected_run = 0;
+        return true;
+    }
+    if (s_rejected_run > 0 && timestamp_follows(s_rejected_timestamp, timestamp, now - s_rejected_ms)) {
+        s_rejected_run++;
+    } else {
+        s_rejected_run = 1;
+    }
+    s_rejected_timestamp = timestamp;
+    s_rejected_ms        = now;
+    if (s_rejected_run >= REMOTEID_LOCATION_RESYNC_SAMPLES) {
+        ESP_LOGW(TAG, "aircraft source time stepped from %.1f to %.1f s after the hour, following it",
+                 s_state.location_sample_timestamp, timestamp);
+        s_rejected_run = 0;
+        return true;
+    }
+    ESP_LOGD(TAG, "ignored Location sample at %.1f s: not after %.1f s", timestamp, s_state.location_sample_timestamp);
+    return false;
+}
 
 // EU 2019/945 Part 6(3)(iii) and (iv): time stamp, position, height above the
 // surface or take-off point, ground speed, and course from true north.
@@ -406,13 +459,14 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         ESP_LOGI(TAG, "updated Operator ID from input source (valid=%d)", s_operator_id_valid);
         break;
     case REMOTEID_STORE_UPDATE_LOCATION: {
+        // Only a source time stamp is evidence of a new measurement. A sample
+        // without one is still broadcast (with an unknown time), but never
+        // counts as fresh and is never stamped with its arrival time, which a
+        // relay repeating a cached sample would otherwise advance every time.
         float timestamp = update->data.location.timestamp;
-        ODID_Timestamp_accuracy_t ts_acc = update->data.location.ts_acc;
-        if (timestamp < 0.0f || timestamp > (float)MAX_TIMESTAMP) {
-            // The source has no time for this sample: stamp it with the arrival
-            // time when UTC is known, otherwise leave it unknown. Never invent UTC.
-            timestamp = remoteid_clock_seconds_after_hour();
-            ts_acc    = ODID_TIME_ACC_UNKNOWN;
+        bool timed = timestamp >= 0.0f && timestamp < (float)MAX_TIMESTAMP;
+        if (timed && !location_sample_in_order_locked(timestamp)) {
+            break; // ignored: the state is unchanged
         }
         s_state.has_position      = update->data.location.has_position;
         s_state.latitude          = update->data.location.latitude;
@@ -433,14 +487,15 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         s_state.vert_acc          = update->data.location.vert_acc;
         s_state.baro_acc          = update->data.location.baro_acc;
         s_state.speed_acc         = update->data.location.speed_acc;
-        // Fresh means a new sample: a relay repeating a cached Location keeps its
-        // timestamp and does not count (a change also covers the UTC-hour
-        // rollover). A sample without a known time can only count on receipt.
-        if (timestamp < 0.0f || timestamp != s_state.timestamp) {
-            s_state.location_updated_ms = now_ms();
+        if (timed) {
+            s_state.timestamp                 = timestamp;
+            s_state.ts_acc                    = update->data.location.ts_acc;
+            s_state.location_sample_timestamp = timestamp;
+            s_state.location_updated_ms       = now_ms();
+        } else {
+            s_state.timestamp = -1.0f;
+            s_state.ts_acc    = ODID_TIME_ACC_UNKNOWN;
         }
-        s_state.ts_acc            = ts_acc;
-        s_state.timestamp         = timestamp;
         ESP_LOGD(TAG, "updated Location from input source (has_position=%d status=%d)",
                  s_state.has_position, s_state.status);
         break;

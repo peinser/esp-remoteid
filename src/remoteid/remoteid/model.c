@@ -143,6 +143,7 @@ esp_err_t remoteid_model_init(remoteid_state_t *state)
     state->speed_acc        = ODID_SPEED_ACC_UNKNOWN;
     state->ts_acc           = ODID_TIME_ACC_UNKNOWN;
     state->timestamp        = -1.0f;
+    state->location_sample_timestamp = -1.0f;
 
     state->operator_location_type = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
     state->area_count             = 1;

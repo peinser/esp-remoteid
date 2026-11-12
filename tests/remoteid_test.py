@@ -470,14 +470,19 @@ def scenario_selftest(driver, monitor, args):
     wait_for(lambda: (monitor.snapshot()["arm_status"] or (1,))[0] == 0, 6, feed_live)
     frozen = odid_timestamp_now()
 
-    # Arm while the aircraft location is stale, so no take-off point is captured
-    # and the expired pilot position has no fallback (disarmed, the take-off
-    # point captured at arming would cover it and readiness stays good).
-    print("  (arming without a fresh aircraft location: no take-off point)")
+    # Let the aircraft sample go stale while still disarmed, then arm: the armed
+    # edge finds no fresh position, so no take-off point is captured, and the
+    # expiring pilot position has no fallback. (Disarmed, or with a take-off
+    # point, readiness would rightly stay good.)
+    print("  (aircraft location aging while disarmed...)")
     for _ in range(5):
-        driver.heartbeat(armed=True)
+        driver.heartbeat(armed=False)
         driver.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS, timestamp=frozen)
         time.sleep(1.0)
+    stale = ((monitor.snapshot()["arm_status"] or (0, ""))[1]).lower()
+    check("aircraft location reported stale before the armed edge", "fresh aircraft location" in stale,
+          f"ARM_STATUS '{stale}'")
+    driver.heartbeat(armed=True)                          # the armed edge, with no fresh position
 
     def feed_cached_relay():
         driver.heartbeat(armed=True)

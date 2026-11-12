@@ -46,12 +46,3 @@ uint32_t remoteid_clock_odid_2019(void)
     }
     return (uint32_t)(unix_us / 1000000 - (int64_t)REMOTEID_ODID_EPOCH_2019);
 }
-
-float remoteid_clock_seconds_after_hour(void)
-{
-    int64_t unix_us;
-    if (!unix_us_now(&unix_us)) {
-        return -1.0f;
-    }
-    return (float)((unix_us / 1000) % 3600000) / 1000.0f;
-}

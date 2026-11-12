@@ -104,7 +104,7 @@ How the firmware addresses the requirements for a direct remote identification a
 | (3) Real-time periodic broadcast during the whole flight, open and documented protocol, receivable by existing mobile devices | ASTM F3411-22a / EN 4709-002 messages over Bluetooth 4 legacy advertising (default), Bluetooth 5 Long Range (Message Packs), Wi-Fi Beacon and Wi-Fi NAN; strict mode requires one of the last three. Location and System at least every second, the other messages at least every 3 s. Transmit failures latch a Remote ID system failure (broadcast status, arming blocked), and so does an enabled transport that does not send within 5 s of the identity becoming usable or of its previous transmission. Good to arm is only reported once every enabled transport has transmitted. |
 | (3)(i) Operator registration number and verification code, unless the check failed | Operator ID message: the 16 public characters, the last being the check character; the 3 secret characters are never broadcast. A number that fails the check is never broadcast. |
 | (3)(ii) Serial number | Basic ID message, ID type serial number. |
-| (3)(iii) Time stamp, position, height above the surface or take-off point | Location message from the autopilot, with its time stamp and height reference. A Location only counts as fresh when its sample timestamp changes, so a relay repeating a cached sample is reported stale. Strict mode only reports ready to arm when all three are present. |
+| (3)(iii) Time stamp, position, height above the surface or take-off point | Location message from the autopilot, with its time stamp and height reference. A Location only counts as fresh when its source time stamp moves forward from the last accepted sample (see [Aircraft location freshness](#aircraft-location-freshness)), so a relay repeating a cached sample is reported stale. Strict mode only reports ready to arm when all three are present. |
 | (3)(iv) Course from true north and ground speed | Location direction and horizontal speed. Strict mode requires a known ground speed, and a known course above 0.5 m/s, before it reports ready to arm. |
 | (3)(v) Position of the remote pilot or, if not available, the take-off point | System message. The pilot position comes from the ground station. The take-off point is captured when the bound autopilot arms (MAVLink `HEARTBEAT`, DroneCAN `ArmingStatus`) and used when no pilot position is available, including when a live pilot position stops updating. Every input reports "No pilot or take-off position" when neither is available, except while the autopilot is known to be disarmed (the take-off point is captured at arming, so requiring it earlier would deadlock). |
 | Emergency status (C1 to C3) | Location status, from the autopilot or derived from its `HEARTBEAT`. |
@@ -152,7 +152,7 @@ The code and the host tests show the behaviour described above. Conformity of a 
 - **Radio measurements on hardware**: sample-to-air age of the Location data, the actual message rates per transport, transmit power and directivity.
 - **Reception and range** with current Android and iOS phones, per transport (EN 4709-002 gives no presumption of conformity for this).
 - **Failure behaviour on hardware**: reboot in flight, loss of the autopilot link, loss of the pilot position stream.
-- **Source contract**: the aircraft position source must deliver new Location samples with correct UTC timestamps. The module detects a repeated cached sample but not an absolute age error, because its clock is not always independent of the source (see the clock provenance in [Operator-location freshness loop](#operator-location-freshness-loop)). ArduPilot's fixed 1 Hz rate is marginal against the 1-second data-age rule.
+- **Source contract**: the aircraft position source must deliver new Location samples with correct UTC timestamps. The module rejects repeated, backward and alternating samples but cannot detect an absolute age error or a replayed cycle of five or more old samples, because its clock is not always independent of the source (see the clock provenance in [Operator-location freshness loop](#operator-location-freshness-loop)). ArduPilot's fixed 1 Hz rate is marginal against the 1-second data-age rule.
 - **Product evidence**: per-unit serial provisioning (eFuse), Secure Boot and flash encryption, the serial marking on the module and packaging, and the user manual (transmission protocol, installation, operator number upload).
 
 ### UA type
@@ -237,7 +237,7 @@ Status behavior:
 | Operational | Configured green flash pattern |
 | Error state | Red fast blink |
 
-Operational means the same as `GOOD_TO_ARM`: a valid Basic ID/UAS ID and Operator ID, all enabled transports running without a reported fault and, when the position comes from MAVLink or DroneCAN, a new Location sample within the last 3 s, plus a pilot position or take-off point (or a disarmed autopilot that will provide one at arming). Anything else shows the waiting pattern. A latched Remote ID system failure, an operator ID that failed its consistency check, or an invalid serial shows the error pattern.
+Operational means the same as `GOOD_TO_ARM`: a valid Basic ID/UAS ID and Operator ID, all enabled transports running without a reported fault and, when the position comes from MAVLink or DroneCAN, a new, in-order Location sample with a source time stamp within the last 3 s, plus a pilot position or take-off point (or a disarmed autopilot that will provide one at arming). Anything else shows the waiting pattern. A latched Remote ID system failure, an operator ID that failed its consistency check, or an invalid serial shows the error pattern.
 
 The RGB data pin is not a suitable transistor trigger for external lights because addressable LEDs use a high-speed encoded data waveform. Use the external GPIO lighting outputs for that purpose.
 
@@ -300,6 +300,16 @@ Every input path (MAVLink messages, message packs, DroneCAN, Kconfig) goes throu
 - A full EU operator registration number entered with its secret part (`FIN87astrdge12k8-xyz`) is checksum-verified (Luhn mod 36), and only the 16 public characters are stored and broadcast. A wrong secret part is rejected. In strict compliance mode only this form is accepted, and Basic ID input is ignored (see [Strict EU (EASA) compliance mode](#strict-eu-easa-compliance-mode)).
 - An update that the OpenDroneID encoder cannot represent (out-of-range enum, coordinate, speed or authentication page) is rejected as a whole instead of stopping the broadcast.
 
+#### Aircraft location freshness
+
+Part 6(3) requires real-time data, so the module only counts a Location as fresh when it is a new measurement, judged by the source's time stamp (seconds after the UTC hour), never by its arrival:
+
+- **Unknown time** (`0xFFFF`, as ArduPilot sends without a 3D GPS fix): the position is still broadcast, with an unknown time stamp, but it never counts as fresh and is never stamped with its arrival time.
+- **In order**: a timed sample must be ahead of the last accepted one, across the rollover at the full hour, and by no more than the local time elapsed between them plus 5 s. A repeated sample (a relay's cache), one behind the last accepted one, or alternating old samples are ignored whole: they change neither the broadcast data nor the order reference.
+- **Time steps**: five consecutive ignored samples that move forward among themselves are taken as the source's clock having stepped back, and its new time is followed. A repeated or alternating replay never forms such a run; a relay replaying a cycle of five or more old samples cannot be told apart without an independent clock.
+
+Ready to arm requires a fresh Location (accepted within the last 3 s).
+
 `OPEN_DRONE_ID_MESSAGE_PACK` is unpacked and each contained OpenDroneID message is applied as if it had arrived on its own, so a flight controller can deliver the full set in a single frame. Authentication pages (`OPEN_DRONE_ID_AUTHENTICATION`, or inside a message pack) are used only when the authentication source is **Relay from MAVLink**; see [Authentication](#authentication).
 
 Incoming Basic ID and Operator ID updates feed the same readiness gate as Kconfig values. This allows a flight controller or companion computer to provide identity at runtime while keeping the placeholder Kconfig values in flash. Broadcasts still do not start until a valid Basic ID/UAS ID and Operator ID are present.
@@ -346,7 +356,7 @@ Either way, this module consumes the standard messages once they are flowing; no
 When `Send HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS` is enabled, the module periodically transmits two messages back to the flight controller (this requires bidirectional UART wiring, i.e. the TX GPIO connected to the flight controller's RX):
 
 - `HEARTBEAT` with component type `MAV_TYPE_ODID`, so the flight controller and ground station see the Remote ID module as a live component of the vehicle.
-- `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` only when a usable identity is present, all enabled transports are running without a reported fault, (for a MAVLink/DroneCAN position source) a new Location sample arrived within the last 3 s, and a pilot position or take-off point is available or will be captured at arming. In strict compliance mode that Location must also carry a position, height, time stamp, ground speed and, when moving, a course. Otherwise `PRE_ARM_FAIL_GENERIC` with the reason (for example "No fresh aircraft location", "Operator ID failed consistency check" or "Remote ID transmitters not running").
+- `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` only when a usable identity is present, all enabled transports are running without a reported fault, (for a MAVLink/DroneCAN position source) a new, in-order Location sample with a source time stamp arrived within the last 3 s, and a pilot position or take-off point is available or will be captured at arming. In strict compliance mode that Location must also carry a position, height, time stamp, ground speed and, when moving, a course. Otherwise `PRE_ARM_FAIL_GENERIC` with the reason (for example "No fresh aircraft location", "Operator ID failed consistency check" or "Remote ID transmitters not running").
 
 This is what lets ArduPilot treat the module as present and healthy. With the relevant `DID_OPTIONS` bit set, ArduPilot refuses to arm until it receives `GOOD_TO_ARM`, so the drone cannot take off without a working Remote ID broadcast. The module shares the flight controller's system ID (adopted automatically by default) and uses an Open Drone ID component ID, so the status appears as part of the same vehicle.
 
@@ -544,6 +554,19 @@ The default ESP serial device inside the container is `/dev/ttyESP32`. Override 
 ```sh
 make flash ESPPORT=/dev/ttyACM0
 ```
+
+### Host regression tests
+
+`make host-test` compiles the firmware logic for the host against stub ESP-IDF headers (`tests/host/stub`) and runs the regression tests in `tests/host`; no hardware or ESP-IDF is needed:
+
+| Test | Covers |
+|------|--------|
+| `store_test.c` (built in normal and strict mode) | Identity validation (EU operator number check, CTA-2063-A serial, ID types), the operator ID error, pilot position and take-off fallback (expiry, role changes, timestamp rules, arming), aircraft location freshness and sample order (cached replay, unknown time, alternating and cyclic old samples, the hour rollover, long gaps, clock steps), strict completeness and readiness |
+| `selftest_test.c` | Transmit deadlines: a transport that never sends, and one that hangs after a pause |
+| `auth_test.c` | Local Ed25519 signing: the signature from the broadcast pages verifies over the message set and the page 0 timestamp, and fails for another timestamp |
+| `dronecan_test.c` / `.py` | DroneCAN wire format in both directions against the reference `pydronecan` package (skipped when it is not installed: `pip install dronecan`) |
+
+The hardware test against a flashed module is `tests/remoteid_test.py`.
 
 ## Transmit Power
 

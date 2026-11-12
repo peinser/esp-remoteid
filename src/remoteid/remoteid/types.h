@@ -46,7 +46,10 @@ typedef struct remoteid_state {
     ODID_Speed_accuracy_t speed_acc;
     ODID_Timestamp_accuracy_t ts_acc;
     float timestamp;                        // seconds after the UTC hour, or < 0 if unknown
-    // esp_timer milliseconds when the last Location update arrived; 0 = never.
+    // The last accepted Location sample with a source time stamp (seconds after
+    // the UTC hour, < 0 = none yet) and the esp_timer milliseconds when it
+    // arrived (0 = never). Freshness and sample order are judged against these.
+    float location_sample_timestamp;
     uint32_t location_updated_ms;
 
     // System / operator. The operator position fields hold what a source

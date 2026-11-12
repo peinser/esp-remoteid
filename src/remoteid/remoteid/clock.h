@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 // Unix time of 2019-01-01T00:00:00Z: the OpenDroneID System / SystemUpdate epoch.
-// It lands exactly on an hour boundary, which the seconds-after-hour helper relies on.
 #define REMOTEID_ODID_EPOCH_2019 1546300800ULL
 
 // Shared UTC clock for every OpenDroneID timestamp, both broadcast over RF and
@@ -22,6 +21,3 @@ bool remoteid_clock_is_synced(void);
 // when unsynced.
 uint32_t remoteid_clock_odid_2019(void);
 
-// Seconds after the full UTC hour, 0..3600 with sub-second resolution (Location
-// timestamp), or -1 when unsynced.
-float remoteid_clock_seconds_after_hour(void);
