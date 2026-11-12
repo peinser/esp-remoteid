@@ -304,7 +304,7 @@ Every input path (MAVLink messages, message packs, DroneCAN, Kconfig) goes throu
 
 Part 6(3) requires real-time data, so the module only counts a Location as fresh when it is a new measurement, judged by the source's time stamp (seconds after the UTC hour), never by its arrival:
 
-- **Unknown time** (`0xFFFF`, as ArduPilot sends without a 3D GPS fix): the position is still broadcast, with an unknown time stamp, but it never counts as fresh and is never stamped with its arrival time.
+- **Unknown time** (`0xFFFF`, as ArduPilot sends without a 3D GPS fix): the position is still broadcast, with an unknown time stamp, but it is never stamped with its arrival time and the location is not fresh from that sample on: freshness always belongs to the coordinates currently held, so an earlier timed sample cannot vouch for them. The take-off point is therefore never captured from an untimed sample.
 - **In order**: a timed sample must be ahead of the last accepted one, across the rollover at the full hour, and by no more than the local time elapsed between them plus 5 s. A repeated sample (a relay's cache), one behind the last accepted one, or alternating old samples are ignored whole: they change neither the broadcast data nor the order reference.
 - **Time steps**: five consecutive ignored samples that move forward among themselves are taken as the source's clock having stepped back, and its new time is followed. A repeated or alternating replay never forms such a run; a relay replaying a cycle of five or more old samples cannot be told apart without an independent clock.
 
@@ -561,7 +561,7 @@ make flash ESPPORT=/dev/ttyACM0
 
 | Test | Covers |
 |------|--------|
-| `store_test.c` (built in normal and strict mode) | Identity validation (EU operator number check, CTA-2063-A serial, ID types), the operator ID error, pilot position and take-off fallback (expiry, role changes, timestamp rules, arming), aircraft location freshness and sample order (cached replay, unknown time, alternating and cyclic old samples, the hour rollover, long gaps, clock steps), strict completeness and readiness |
+| `store_test.c` (built in normal and strict mode) | Identity validation (EU operator number check, CTA-2063-A serial, ID types), the operator ID error, pilot position and take-off fallback (expiry, role changes, timestamp rules, arming), aircraft location freshness and sample order (cached replay, unknown time, alternating and cyclic old samples, the hour rollover, long gaps, clock steps), take-off capture only from fresh timed coordinates, strict completeness and readiness. Linked with the real encoder and OpenDroneID core, so every accepted update is also checked for encodability |
 | `selftest_test.c` | Transmit deadlines: a transport that never sends, and one that hangs after a pause |
 | `auth_test.c` | Local Ed25519 signing: the signature from the broadcast pages verifies over the message set and the page 0 timestamp, and fails for another timestamp |
 | `dronecan_test.c` / `.py` | DroneCAN wire format in both directions against the reference `pydronecan` package (skipped when it is not installed: `pip install dronecan`) |

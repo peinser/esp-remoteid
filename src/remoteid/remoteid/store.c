@@ -277,9 +277,13 @@ static void log_missing_identity_locked(void)
     }
 }
 
+// Fresh: the current coordinates are a timed sample accepted within the last
+// REMOTEID_LOCATION_FRESH_MS. An untimed update replaces the coordinates but not
+// the order watermark, so the watermark's age alone would vouch for coordinates
+// it never covered (e.g. a take-off point captured from an untimed sample).
 static bool location_is_fresh_locked(void)
 {
-    return s_state.location_updated_ms != 0 &&
+    return s_state.timestamp >= 0.0f && s_state.location_updated_ms != 0 &&
            now_ms() - s_state.location_updated_ms <= REMOTEID_LOCATION_FRESH_MS;
 }
 

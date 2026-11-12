@@ -32,7 +32,8 @@ host-test: ## Run the host regression tests (DroneCAN wire format needs: pip ins
 	@mkdir -p $(HOST_TEST_OUT)
 	@for strict in 0 1; do \
 		$(HOST_CC) $(HOST_CFLAGS) -DCONFIG_REMOTEID_COMPLIANCE_STRICT=$$strict tests/host/store_test.c \
-			src/remoteid/remoteid/model.c $(HOST_ODID)/opendroneid.c -lm -o $(HOST_TEST_OUT)/store_test_$$strict && \
+			src/remoteid/remoteid/model.c src/remoteid/remoteid/encode.c src/remoteid/remoteid/auth.c \
+			$(HOST_ODID)/opendroneid.c -lm -o $(HOST_TEST_OUT)/store_test_$$strict && \
 		$(HOST_TEST_OUT)/store_test_$$strict || exit 1; \
 	done
 	@$(HOST_CC) $(HOST_CFLAGS) tests/host/selftest_test.c -o $(HOST_TEST_OUT)/selftest_test

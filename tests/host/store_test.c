@@ -9,9 +9,11 @@
 int64_t g_now_us = 100 * 1000000LL;
 EventBits_t g_event_bits;
 
-// Collaborators of the store, outside this test's scope.
+// Collaborators of the store, outside this test's scope. The encoder (encode.c,
+// with the real OpenDroneID core) is linked, so every accepted update is checked
+// for encodability exactly as on the device.
 bool remoteid_selftest_ok(void) { return true; }
-esp_err_t remoteid_encode_validate(const remoteid_state_t *state) { (void)state; return ESP_OK; }
+uint32_t remoteid_clock_odid_2019(void) { return 0; }
 
 static int failures;
 #define CHECK(cond) do { if (!(cond)) { failures++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
@@ -276,9 +278,45 @@ static void test_location_freshness(void)
     location_at(g_source_time, 50.9, 5.0f, 0.25f, INV_DIR);                   // nearly stationary: fine
     CHECK(health() == REMOTEID_HEALTH_OK);
     advance_ms(1000);
-    location_at(-1.0f, 50.9, 5.0f, 0.0f, 0.0f);                               // unknown time: incomplete
-    CHECK(health() == REMOTEID_HEALTH_LOCATION_INCOMPLETE);
+    location_at(-1.0f, 50.9, 5.0f, 0.0f, 0.0f);                               // unknown time: not fresh
+    CHECK(health() == REMOTEID_HEALTH_LOCATION_STALE);
 #endif
+    live_sample();
+}
+
+// The take-off point is only captured from coordinates whose own source time
+// is fresh. An untimed update replaces the coordinates but not the timed
+// sample's age, which must not vouch for them.
+static void test_takeoff_needs_timed_coordinates(void)
+{
+    arm(false);
+    g_source_time += 1.0f;
+    advance_ms(1000);
+    location_at(g_source_time, 47.0, 5.0f, 0.0f, 0.0f);                    // timed, latitude 47
+    CHECK(health() == REMOTEID_HEALTH_OK);
+    advance_ms(500);
+    location_at(-1.0f, 49.0, 5.0f, 0.0f, 0.0f);                              // untimed, latitude 49
+    CHECK(s_state.latitude == 49.0 && health() == REMOTEID_HEALTH_LOCATION_STALE);
+    advance_ms(100);
+    arm(true);                                                               // within 3 s of the timed sample
+    CHECK(!s_state.has_takeoff_position);
+    advance_ms(400);
+    g_source_time += 1.0f;
+    location_at(g_source_time, 47.0, 5.0f, 0.0f, 0.0f);                    // timed data resumes
+    CHECK(health() == REMOTEID_HEALTH_NO_PILOT_POSITION);                    // armed, nothing captured
+    double latitude = 0;
+    ODID_operator_location_type_t type;
+    CHECK(!pilot(&latitude, &type));                                         // no fallback at latitude 49
+
+    // With fresh timed coordinates the capture takes exactly those.
+    arm(false);
+    advance_ms(1000);
+    g_source_time += 1.0f;
+    location_at(g_source_time, 47.0, 5.0f, 0.0f, 0.0f);
+    arm(true);
+    CHECK(s_state.has_takeoff_position && s_state.takeoff_latitude == 47.0);
+    CHECK(pilot(&latitude, &type) && latitude == 47.0 && type == ODID_OPERATOR_LOCATION_TYPE_TAKEOFF);
+    arm(false);
     live_sample();
 }
 
@@ -378,6 +416,7 @@ int main(void)
     test_identity();
     test_location_freshness();
     test_pilot_position();
+    test_takeoff_needs_timed_coordinates();
 
     printf("store_test (strict=%d): %s\n", CONFIG_REMOTEID_COMPLIANCE_STRICT, failures ? "FAILED" : "passed");
     return failures != 0;
