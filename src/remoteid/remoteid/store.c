@@ -319,18 +319,21 @@ static void expire_live_operator_position_locked(void)
 }
 
 // Whether a position from a System / SystemUpdate with this source timestamp
-// may replace the stored one. A known timestamp older than the stored one is
-// out of order and dropped. After an expiry only a newer known timestamp
-// counts, so neither the cached sample nor an unknown time revives it.
-static bool operator_position_update_allowed_locked(uint32_t source_timestamp)
+// and role may replace the stored one. The role is the one a full System
+// declares, or the stored one for a SystemUpdate (which carries none). A known
+// timestamp older than the stored one is out of order and dropped. An expired
+// live position is only revived by a newer known timestamp, so neither the
+// cached sample nor an unknown time brings it back. A fixed or take-off position
+// needs no freshness, so a System switching to one is accepted with time 0.
+static bool operator_position_update_allowed_locked(uint32_t source_timestamp, ODID_operator_location_type_t role)
 {
+    bool stale_live = s_state.operator_position_expired && role == ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS;
     if (source_timestamp == 0) {
-        return !s_state.operator_position_expired;
-    }
-    if (source_timestamp < s_state.operator_position_timestamp) {
-        return false;
-    }
-    if (s_state.operator_position_expired && source_timestamp == s_state.operator_position_timestamp) {
+        if (stale_live) {
+            return false;
+        }
+    } else if (source_timestamp < s_state.operator_position_timestamp ||
+               (stale_live && source_timestamp == s_state.operator_position_timestamp)) {
         return false;
     }
     s_state.operator_position_expired = false;
@@ -422,7 +425,8 @@ static bool apply_update_locked(remoteid_store_update_t *update)
         // sends that until the ground station provides one. It does not erase
         // the stored one.
         if (update->data.system.has_operator_position &&
-            operator_position_update_allowed_locked(update->data.system.timestamp)) {
+            operator_position_update_allowed_locked(update->data.system.timestamp,
+                                                    update->data.system.operator_location_type)) {
             s_state.has_operator_position   = true;
             s_state.operator_latitude       = update->data.system.operator_latitude;
             s_state.operator_longitude      = update->data.system.operator_longitude;
@@ -446,7 +450,8 @@ static bool apply_update_locked(remoteid_store_update_t *update)
     case REMOTEID_STORE_UPDATE_SYSTEM_UPDATE:
         // Position only: the role (live / fixed) stays the one from the last System.
         if (!update->data.system_update.has_operator_position ||
-            !operator_position_update_allowed_locked(update->data.system_update.timestamp)) {
+            !operator_position_update_allowed_locked(update->data.system_update.timestamp,
+                                                     s_state.operator_location_type)) {
             break;
         }
         s_state.has_operator_position    = true;
