@@ -11,8 +11,9 @@ config REMOTEID_TRANSPORT_BLE5_LONG_RANGE
     bool "Enable Bluetooth 5 Long Range (LE Coded PHY)"
     default n
     help
-        Broadcast OpenDroneID messages using BLE 5 extended advertising with
-        LE Coded PHY (S=8 coding). This increases range at the cost of a lower
+        Broadcast OpenDroneID Message Packs (all messages in one
+        advertisement) using BLE 5 extended advertising with LE Coded PHY (S=8
+        coding). This increases range at the cost of a lower
         data rate and is a separate transport from BLE 4 legacy advertising.
         Both can be enabled simultaneously.
 
@@ -63,14 +64,15 @@ config REMOTEID_IDENTITY_RUNTIME
         until a valid Basic ID and Operator ID arrive. The static identity
         options below are hidden in this mode, since they would only be
         overwritten by the incoming messages. In strict compliance mode the
-        UAS ID and UA type stay configured here and only the Operator ID (and
-        System data) come from the flight controller or GCS.
+        UAS ID still comes from eFuse and the UA type from the option below;
+        only the Operator ID (and System data) come from the flight controller
+        or GCS.
 
 endchoice
 
 config REMOTEID_UAS_ID
     string "UAS ID (max 20 characters)"
-    depends on REMOTEID_IDENTITY_STATIC || REMOTEID_COMPLIANCE_STRICT
+    depends on REMOTEID_IDENTITY_STATIC && !REMOTEID_COMPLIANCE_STRICT
     default "CHANGE_ME_UAS_ID"
     help
         The UAS ID broadcast in the Basic ID message. In the EU this is the
@@ -80,8 +82,9 @@ config REMOTEID_UAS_ID
         character 1-F><serial>, using digits and upper-case letters without O
         and I, e.g. "1ABC5XYZ12".
 
-        Outside strict compliance mode a CAA registration number can be used
-        instead (ID type "CAA Registration ID"). Must be 20 characters or fewer.
+        A CAA registration number can be used instead (ID type "CAA
+        Registration ID"). Must be 20 characters or fewer. Not used in strict
+        compliance mode, which reads the serial from eFuse.
 
 config REMOTEID_OPERATOR_ID
     string "Operator registration ID (max 20 characters)"
@@ -103,9 +106,10 @@ config REMOTEID_COMPLIANCE_STRICT
         2019/945, Part 6 of the Annex) at runtime. Needs a live position
         source (MAVLink or DroneCAN input).
 
-        - The UAS ID is an ANSI/CTA-2063-A serial number configured at build
-          time. Basic ID messages from MAVLink or DroneCAN are ignored, so it
-          cannot be changed in operation. A malformed serial is never
+        - The UAS ID is the ANSI/CTA-2063-A serial number burned into the
+          eFuse user data block (BLOCK_USR_DATA) at production, so neither
+          input links nor a reflash can change it. Basic ID messages from
+          MAVLink or DroneCAN are ignored. A malformed serial is never
           broadcast: the device stays not-ready, shows the error indicator and
           reports the failure to the autopilot.
         - The operator ID must be the full EU registration number with its 3
@@ -118,10 +122,13 @@ config REMOTEID_COMPLIANCE_STRICT
           position, a height and a time stamp.
         - No fixed configured position, no start-up delay, and the OTA server
           only with Secure Boot (signed images).
+        - At least one EN 4709-002 broadcast method is enabled: BLE 5 Long
+          Range, Wi-Fi Beacon or Wi-Fi NAN. Keep BLE 4 legacy advertising on
+          as well, since phones without those receivers rely on it.
 
-        A production device also needs Secure Boot and flash encryption, and
-        no unauthenticated OTA access, so the serial cannot be changed by
-        reflashing.
+        A production device also needs Secure Boot and flash encryption, so
+        the position handling and the rest of the firmware cannot be changed
+        by reflashing.
 
         When disabled, a malformed serial is logged as a warning but still
         broadcast, and a 16-character operator ID is accepted unverified
@@ -613,7 +620,9 @@ config REMOTEID_BLE_TX_INTERVAL_MS
     range 100 260
     depends on REMOTEID_TRANSPORT_BLE || REMOTEID_TRANSPORT_BLE5_LONG_RANGE
     help
-        Interval between BLE advertisement payload rotations. The schedule has
+        Interval between BLE advertisement payload updates. BLE 5 Long Range
+        sends the whole Message Pack (every message) once per interval. For
+        BLE 4 legacy advertising, one message per interval: the schedule has
         9 slots (Location and System in every third slot) plus up to four
         100 ms authentication slots between them. At the 260 ms maximum
         Location and System are still sent at least once per second

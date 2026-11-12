@@ -53,6 +53,9 @@
 #define CONFIG_REMOTEID_TRANSPORT_WIFI_NAN 0
 #endif
 
+// main.c only starts the Wi-Fi transport when one of them is enabled.
+#if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON || CONFIG_REMOTEID_TRANSPORT_WIFI_NAN
+
 static const char *TAG = "remoteid_wifi";
 
 #if CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON
@@ -324,3 +327,5 @@ esp_err_t remoteid_wifi_start(void)
 
     return ESP_OK;
 }
+
+#endif /* CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON || CONFIG_REMOTEID_TRANSPORT_WIFI_NAN */

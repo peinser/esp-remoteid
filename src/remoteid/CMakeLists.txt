@@ -25,6 +25,7 @@ idf_component_register(
         app_update
         bt
         driver
+        efuse
         json
         esp_driver_gpio
         esp_driver_rmt

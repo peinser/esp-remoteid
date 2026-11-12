@@ -4,9 +4,40 @@
 
 #include "config.h"
 
-// Strict compliance fixes the UAS ID at build time (EU 2019/945: the user cannot
-// modify the serial number), so it is configured even with a runtime identity.
+// The UAS ID and UA type are configured, not taken from input links, with a
+// static identity and in strict compliance mode (EU 2019/945: the serial number
+// cannot be modified by the user).
 #define REMOTEID_CONFIGURED_UAS_ID (CONFIG_REMOTEID_IDENTITY_STATIC || CONFIG_REMOTEID_COMPLIANCE_STRICT)
+
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT
+
+#include "esp_efuse.h"
+#include "esp_efuse_table.h"
+#include "esp_log.h"
+
+static const char *TAG = "remoteid_model";
+
+// EN 4709-002: the serial is loaded at the factory, cannot be modified afterwards
+// and is stored in secure memory. It lives in the one-time-programmable eFuse
+// user data block (BLOCK_USR_DATA, first 20 bytes, NUL-padded ASCII), burned and
+// write-protected at production (see the README). A firmware image carries no
+// serial, so one signed image serves every unit.
+static void read_serial_from_efuse(char uas_id[ODID_ID_SIZE + 1])
+{
+    if (esp_efuse_read_field_blob(ESP_EFUSE_USER_DATA, uas_id, ODID_ID_SIZE * 8) != ESP_OK) {
+        ESP_LOGE(TAG, "failed to read the serial number from eFuse");
+        memset(uas_id, 0, ODID_ID_SIZE + 1);
+        return;
+    }
+    uas_id[ODID_ID_SIZE] = '\0';
+    if (uas_id[0] == '\0') {
+        ESP_LOGE(TAG, "no serial number in eFuse BLOCK_USR_DATA: the unit is not provisioned");
+    } else if (!esp_efuse_read_field_bit(ESP_EFUSE_WR_DIS_BLOCK_USR_DATA)) {
+        ESP_LOGW(TAG, "eFuse BLOCK_USR_DATA is not write-protected: the serial number can still be altered");
+    }
+}
+
+#endif /* CONFIG_REMOTEID_COMPLIANCE_STRICT */
 
 #if REMOTEID_CONFIGURED_UAS_ID
 
@@ -80,8 +111,12 @@ esp_err_t remoteid_model_init(remoteid_state_t *state)
     // until a flight controller or GCS supplies it over MAVLink/DroneCAN. The
     // readiness gate keeps the module from broadcasting until a valid Basic ID
     // and Operator ID are present. (memset already cleared uas_id/operator_id.)
-#if REMOTEID_CONFIGURED_UAS_ID
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT
+    read_serial_from_efuse(state->uas_id);
+#elif CONFIG_REMOTEID_IDENTITY_STATIC
     strlcpy(state->uas_id, REMOTEID_UAS_ID, sizeof(state->uas_id));
+#endif
+#if REMOTEID_CONFIGURED_UAS_ID
     state->id_type     = configured_id_type();
     state->ua_type     = configured_ua_type();
 #else

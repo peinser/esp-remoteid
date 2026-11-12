@@ -20,6 +20,13 @@
 
 static const char *TAG = "remoteid_main";
 
+// EN 4709-002 requires at least one of these broadcast methods (BLE 4 legacy
+// advertising is optional there, though it is what most phones can receive).
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT && !(CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE || \
+    CONFIG_REMOTEID_TRANSPORT_WIFI_BEACON || CONFIG_REMOTEID_TRANSPORT_WIFI_NAN)
+#error "Strict compliance mode needs BLE 5 Long Range, Wi-Fi Beacon or Wi-Fi NAN (EN 4709-002); keep BLE 4 legacy enabled as well"
+#endif
+
 // Hidden in strict compliance mode: a module that reboots in flight must resume
 // broadcasting at once.
 #ifndef CONFIG_REMOTEID_STARTUP_DELAY_MS

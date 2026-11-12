@@ -1,5 +1,6 @@
 #include "store.h"
 
+#include <ctype.h>
 #include <string.h>
 
 #include "encode.h"
@@ -171,6 +172,11 @@ static bool normalize_operator_id(char id[ODID_ID_SIZE + 1])
         ESP_LOGW(TAG, "rejected EU operator ID: checksum does not match the secret characters");
         return false;
     }
+    // EN 4709-002 format: upper-case country code, the rest lower case. The
+    // check is case-insensitive, so normalise to the registered spelling.
+    for (int i = 3; i < 16; i++) {
+        id[i] = (char)tolower((unsigned char)id[i]);
+    }
     memset(id + 16, 0, ODID_ID_SIZE - 16);
     return true;
 }
@@ -327,10 +333,13 @@ static void expire_live_operator_position_locked(void)
 }
 
 // After an expiry only a newer source timestamp may replace the operator
-// position; a relay repeating its cached SYSTEM / SYSTEM_UPDATE is ignored.
+// position; a relay repeating its cached SYSTEM / SYSTEM_UPDATE is ignored. A
+// source without time (timestamp 0) cannot be told apart from a cache and is
+// aged by receipt instead, so it is let through.
 static bool operator_position_update_allowed_locked(uint32_t source_timestamp)
 {
-    if (s_state.operator_position_expired && source_timestamp <= s_state.operator_position_timestamp) {
+    if (s_state.operator_position_expired && source_timestamp != 0 &&
+        source_timestamp <= s_state.operator_position_timestamp) {
         return false;
     }
     s_state.operator_position_expired = false;

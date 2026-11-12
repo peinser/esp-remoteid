@@ -20,8 +20,12 @@
 #include "selftest.h"
 #include "store.h"
 
-#define REMOTEID_SERVICE_DATA_LEN    (2 + ODID_MESSAGE_SIZE)
-#define REMOTEID_LEGACY_ADV_DATA_LEN (1 + 1 + 2 + REMOTEID_SERVICE_DATA_LEN)
+// Service data AD structure: length, AD type, 16-bit UUID, application code and
+// message counter, then the ODID payload (one message, or a Message Pack).
+#define REMOTEID_AD_HEADER_LEN       6
+#define REMOTEID_LEGACY_ADV_DATA_LEN (REMOTEID_AD_HEADER_LEN + ODID_MESSAGE_SIZE)
+// A full Message Pack: header plus up to 9 messages (5 base + 4 auth pages).
+#define REMOTEID_PACK_ADV_DATA_LEN   (REMOTEID_AD_HEADER_LEN + sizeof(ODID_MessagePack_encoded))
 #define REMOTEID_ADV_INTERVAL_100_MS 0x00a0
 // One full advertising window per auth page: enough for one transmission on all 3 channels.
 #define REMOTEID_BLE_AUTH_PAGE_INTERVAL_MS 100
@@ -42,12 +46,17 @@
 #if !CONFIG_BT_NIMBLE_EXT_ADV
 #error "Remote ID BLE needs CONFIG_BT_NIMBLE_EXT_ADV=y (see sdkconfig.defaults)"
 #endif
+#if CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE && CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE < 251
+#error "BLE5 Long Range sends a full Message Pack: set CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=251 (see sdkconfig.defaults)"
+#endif
 #if CONFIG_REMOTEID_TRANSPORT_BLE && CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE && \
     CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES < 2
 #error "BLE4 legacy + BLE5 Long Range need CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES >= 2"
 #endif
 
 static const char *TAG = "remoteid_ble";
+
+#if CONFIG_REMOTEID_TRANSPORT_BLE
 
 // Auth slots exist when an authentication source is configured. Slots beyond
 // the populated pages are skipped at runtime without consuming time.
@@ -60,7 +69,8 @@ static const char *TAG = "remoteid_ble";
 // The schedule has one slot per auth page.
 _Static_assert(ODID_AUTH_MAX_PAGES == 4, "the BLE schedule carries exactly 4 auth page slots");
 
-// Location and System every third slot, the static messages and the auth pages
+// BLE 4 legacy advertising carries one message per advertisement, so the
+// messages rotate. Location and System every third slot, the static messages and the auth pages
 // (100 ms each) spread between them. With the slot interval T (at most 260 ms):
 //   Location / System gap:     at most 3T + 2 x 100 ms = 980 ms   (1 s required)
 //   static messages and auth:  every 9T + 4 x 100 ms   = 2740 ms  (3 s required)
@@ -88,20 +98,10 @@ static const uint8_t s_message_schedule[] = {
 
 #define SCHEDULE_LEN (sizeof(s_message_schedule) / sizeof(s_message_schedule[0]))
 
+#endif /* CONFIG_REMOTEID_TRANSPORT_BLE */
+
 // ---- Shared helpers --------------------------------------------------------
 
-static void build_adv_payload(uint8_t out[REMOTEID_LEGACY_ADV_DATA_LEN],
-                              const uint8_t message[ODID_MESSAGE_SIZE],
-                              uint8_t counter)
-{
-    out[0] = REMOTEID_LEGACY_ADV_DATA_LEN - 1;
-    out[1] = BLE_HS_ADV_TYPE_SVC_DATA_UUID16;
-    out[2] = REMOTEID_SERVICE_UUID & 0xff;
-    out[3] = (REMOTEID_SERVICE_UUID >> 8) & 0xff;
-    out[4] = REMOTEID_AD_APPLICATION_CODE;
-    out[5] = counter;
-    memcpy(&out[6], message, ODID_MESSAGE_SIZE);
-}
 
 static esp_power_level_t configured_ble_tx_power(void)
 {
@@ -133,7 +133,7 @@ static esp_err_t configure_ble_tx_power(void)
     return ESP_OK;
 }
 
-// ---- Transport task (shared by BLE4 and BLE5) ------------------------------
+// ---- Shared by the BLE4 and BLE5 transports ---------------------------------
 
 #if CONFIG_REMOTEID_TRANSPORT_BLE || CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE
 
@@ -164,20 +164,35 @@ static void record_tx_result(ble_transport_ctx_t *ctx, bool ok)
     }
 }
 
-static esp_err_t advertise_ble(ble_transport_ctx_t *ctx, const uint8_t message[ODID_MESSAGE_SIZE])
+// Returns the advertising data length.
+static size_t build_adv_payload(uint8_t *out, const uint8_t *payload, size_t payload_len, uint8_t counter)
 {
-    uint8_t adv_data[REMOTEID_LEGACY_ADV_DATA_LEN] = {0};
-    uint8_t message_type  = message[0] >> 4;
+    out[0] = (uint8_t)(REMOTEID_AD_HEADER_LEN - 1 + payload_len);
+    out[1] = BLE_HS_ADV_TYPE_SVC_DATA_UUID16;
+    out[2] = REMOTEID_SERVICE_UUID & 0xff;
+    out[3] = (REMOTEID_SERVICE_UUID >> 8) & 0xff;
+    out[4] = REMOTEID_AD_APPLICATION_CODE;
+    out[5] = counter;
+    memcpy(&out[REMOTEID_AD_HEADER_LEN], payload, payload_len);
+    return REMOTEID_AD_HEADER_LEN + payload_len;
+}
+
+// Advertise one ODID message or a Message Pack. Each message type (and the pack)
+// has its own counter, incremented per transmission.
+static esp_err_t advertise_ble(ble_transport_ctx_t *ctx, const uint8_t *payload, size_t payload_len)
+{
+    uint8_t adv_data[REMOTEID_PACK_ADV_DATA_LEN];
+    uint8_t message_type  = payload[0] >> 4;
     uint8_t counter_index = message_type < ODID_MSG_COUNTER_AMOUNT ? message_type : ODID_MSG_COUNTER_PACKED;
 
-    build_adv_payload(adv_data, message, ctx->counters[counter_index]);
+    size_t adv_len = build_adv_payload(adv_data, payload, payload_len, ctx->counters[counter_index]);
 
-    struct os_mbuf *om = os_msys_get_pkthdr(sizeof(adv_data), 0);
+    struct os_mbuf *om = os_msys_get_pkthdr(adv_len, 0);
     if (!om) {
         ESP_LOGE(TAG, "%s failed to allocate mbuf", ctx->label);
         return ESP_ERR_NO_MEM;
     }
-    if (os_mbuf_append(om, adv_data, sizeof(adv_data)) != 0) {
+    if (os_mbuf_append(om, adv_data, adv_len) != 0) {
         os_mbuf_free_chain(om);
         ESP_LOGE(TAG, "%s failed to append adv data to mbuf", ctx->label);
         return ESP_FAIL;
@@ -203,7 +218,28 @@ static esp_err_t advertise_ble(ble_transport_ctx_t *ctx, const uint8_t message[O
     return ESP_OK;
 }
 
-static void remoteid_ble_transport_task(void *arg)
+// Stop advertising while there is no usable identity, and resume the fixed
+// cadence once there is.
+static void pause_until_ready(ble_transport_ctx_t *ctx, TickType_t *last_wake)
+{
+    if (remoteid_store_is_ready()) {
+        return;
+    }
+    ble_gap_ext_adv_stop(ctx->instance);
+    ctx->started = false;
+    remoteid_selftest_paused(ctx->transport);
+    ESP_LOGW(TAG, "%s transport paused until Remote ID identity is ready", ctx->label);
+    ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
+    *last_wake = xTaskGetTickCount();
+}
+
+#endif /* CONFIG_REMOTEID_TRANSPORT_BLE || CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE */
+
+#if CONFIG_REMOTEID_TRANSPORT_BLE
+
+// BLE 4 legacy advertising: one message per advertisement, following
+// s_message_schedule.
+static void remoteid_ble4_task(void *arg)
 {
     ble_transport_ctx_t *ctx = arg;
     remoteid_state_t snapshot;
@@ -216,14 +252,7 @@ static void remoteid_ble_transport_task(void *arg)
     TickType_t last_wake = xTaskGetTickCount();
 
     while (true) {
-        if (!remoteid_store_is_ready()) {
-            ble_gap_ext_adv_stop(ctx->instance);
-            ctx->started = false;
-            remoteid_selftest_paused(ctx->transport);
-            ESP_LOGW(TAG, "%s transport paused until Remote ID identity is ready", ctx->label);
-            ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
-            last_wake = xTaskGetTickCount();
-        }
+        pause_until_ready(ctx, &last_wake);
 
         uint8_t schedule_entry = s_message_schedule[ctx->schedule_index];
         ctx->schedule_index = (ctx->schedule_index + 1) % SCHEDULE_LEN;
@@ -261,7 +290,7 @@ static void remoteid_ble_transport_task(void *arg)
             }
         }
 
-        bool ok = message && advertise_ble(ctx, message) == ESP_OK;
+        bool ok = message && advertise_ble(ctx, message, ODID_MESSAGE_SIZE) == ESP_OK;
         record_tx_result(ctx, ok);
         if (ok) {
             ESP_LOGD(TAG, "%s advertising ODID message type %u", ctx->label, message[0] >> 4);
@@ -272,7 +301,45 @@ static void remoteid_ble_transport_task(void *arg)
     }
 }
 
-#endif /* CONFIG_REMOTEID_TRANSPORT_BLE || CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE */
+#endif /* CONFIG_REMOTEID_TRANSPORT_BLE */
+
+#if CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE
+
+// BLE 5 extended advertising carries the whole message set, authentication
+// pages included, in one Message Pack (ASTM F3411-22a, EN 4709-002), rebuilt
+// every interval. A local signature then covers exactly the messages in the pack.
+static void remoteid_ble5_task(void *arg)
+{
+    ble_transport_ctx_t *ctx = arg;
+    // Static: too large for the task stack together, and only this task uses them.
+    static remoteid_state_t snapshot;
+    static ODID_UAS_Data uas_data;
+    static ODID_MessagePack_encoded pack;
+
+    ESP_LOGI(TAG, "%s transport waiting for Remote ID identity", ctx->label);
+    ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
+    ESP_LOGI(TAG, "%s transport ready, starting advertisements", ctx->label);
+
+    TickType_t last_wake = xTaskGetTickCount();
+    while (true) {
+        pause_until_ready(ctx, &last_wake);
+
+        ESP_ERROR_CHECK(remoteid_store_get_snapshot(&snapshot));
+        int len = -1;
+        if (remoteid_encode_uas_data(&snapshot, &uas_data) == ESP_OK) {
+            len = odid_message_build_pack(&uas_data, &pack, sizeof(pack));
+        }
+        if (len <= 0) {
+            ESP_LOGE(TAG, "%s failed to build the Message Pack: %d", ctx->label, len);
+        }
+        bool ok = len > 0 && advertise_ble(ctx, (const uint8_t *)&pack, (size_t)len) == ESP_OK;
+        record_tx_result(ctx, ok);
+
+        xTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONFIG_REMOTEID_BLE_TX_INTERVAL_MS));
+    }
+}
+
+#endif /* CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE */
 
 // ---- BLE 4 legacy advertising ----------------------------------------------
 
@@ -316,7 +383,7 @@ static esp_err_t configure_ble4_legacy(void)
         return ESP_OK;
     }
     task_created = true;
-    if (xTaskCreate(remoteid_ble_transport_task, "remoteid_ble4", 6144, &s_ble4_ctx, 5, NULL) != pdPASS) {
+    if (xTaskCreate(remoteid_ble4_task, "remoteid_ble4", 6144, &s_ble4_ctx, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create BLE4 legacy task");
         return ESP_ERR_NO_MEM;
     }
@@ -370,7 +437,7 @@ static esp_err_t configure_ble5_lr(void)
         return ESP_OK;
     }
     task_created = true;
-    if (xTaskCreate(remoteid_ble_transport_task, "remoteid_ble5", 6144, &s_ble5_ctx, 5, NULL) != pdPASS) {
+    if (xTaskCreate(remoteid_ble5_task, "remoteid_ble5", 6144, &s_ble5_ctx, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create BLE5 Long Range task");
         return ESP_ERR_NO_MEM;
     }
