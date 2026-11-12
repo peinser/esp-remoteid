@@ -170,11 +170,7 @@ esp_err_t remoteid_encode_uas_data(const remoteid_state_t *state, ODID_UAS_Data 
     uas_data->OperatorIDValid = 1;
     uas_data->SelfIDValid = 1;
 
-    // Authentication received over the input link wins; otherwise fall back to
-    // locally generated signatures (a no-op when local signing is disabled).
-    if (!remoteid_auth_apply_external_uas_data(uas_data, state)) {
-        remoteid_auth_sign_uas_data(uas_data);
-    }
+    remoteid_auth_fill_uas_data(uas_data, state);
 
     return ESP_OK;
 }

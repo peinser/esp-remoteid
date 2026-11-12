@@ -7,6 +7,7 @@ idf_component_register(
         "remoteid/clock.c"
         "remoteid/dronecan.c"
         "remoteid/encode.c"
+        "remoteid/input.c"
         "led/indicator.c"
         "led/lighting.c"
         "remoteid/mavlink.c"

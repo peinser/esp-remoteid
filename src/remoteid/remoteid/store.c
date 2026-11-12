@@ -110,7 +110,7 @@ static int base36_value(char c)
     return -1;
 }
 
-// EN 4709-002 operator registration number check character: Luhn mod 36 over
+// EU operator registration number check character: Luhn mod 36 over
 // the 12 public characters after the country code followed by the 3 secret
 // characters. Example: "FIN87astrdge12k8-xyz" -> check character '8'.
 static bool eu_operator_checksum_ok(const char id[ODID_ID_SIZE])
@@ -133,21 +133,37 @@ static bool eu_operator_checksum_ok(const char id[ODID_ID_SIZE])
     return base36_value(id[15]) == (36 - sum % 36) % 36;
 }
 
+static bool is_upper_alpha(char c)
+{
+    return c >= 'A' && c <= 'Z';
+}
+
 // Validate an operator ID. A full EU registration number entered with its
 // secret suffix ("<16 public>-<3 secret>") is checksum-verified and the
-// verification-only suffix is removed so it is never stored or broadcast.
+// verification-only suffix is removed so it is never stored or broadcast. In
+// strict compliance mode only that verifiable form is accepted.
 static bool normalize_operator_id(char id[ODID_ID_SIZE + 1])
 {
     if (!normalize_text_field(id, ODID_ID_SIZE)) {
         return false;
     }
-    if (strlen(id) == ODID_ID_SIZE && id[16] == '-') {
-        if (!eu_operator_checksum_ok(id)) {
-            ESP_LOGW(TAG, "rejected EU operator ID: checksum does not match the secret characters");
-            return false;
-        }
-        memset(id + 16, 0, ODID_ID_SIZE - 16);
+    bool has_secret = strlen(id) == ODID_ID_SIZE && id[16] == '-';
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT
+    if (!has_secret || !is_upper_alpha(id[0]) || !is_upper_alpha(id[1]) || !is_upper_alpha(id[2])) {
+        ESP_LOGW(TAG, "rejected operator ID: strict mode needs the full EU registration number "
+                      "with its 3 secret characters (<country><13 characters>-<3 secret>)");
+        return false;
     }
+#else
+    if (!has_secret) {
+        return true;
+    }
+#endif
+    if (!eu_operator_checksum_ok(id)) {
+        ESP_LOGW(TAG, "rejected EU operator ID: checksum does not match the secret characters");
+        return false;
+    }
+    memset(id + 16, 0, ODID_ID_SIZE - 16);
     return true;
 }
 
@@ -164,15 +180,14 @@ static bool operator_id_is_usable(const remoteid_state_t *state)
            strncmp(state->operator_id, "CHANGE_ME_OP_ID", ODID_ID_SIZE) != 0;
 }
 
+// ANSI/CTA-2063-A characters: digits and upper-case letters except O and I.
 static bool serial_char_ok(char c)
 {
-    // Alphanumeric. CTA-2063-A excludes 'O'/'I' in the serial body, but we accept
-    // the full alnum set to avoid false rejects of validly-assigned codes.
-    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    return (c >= '0' && c <= '9') || (is_upper_alpha(c) && c != 'O' && c != 'I');
 }
 
-// Validate the ANSI/CTA-2063-A structure: 4-char manufacturer code, a 1-char hex
-// length code (1..F), then exactly that many serial characters.
+// Validate the ANSI/CTA-2063-A structure: 4-char manufacturer code, a 1-char
+// upper-case hex length code (1..F), then exactly that many serial characters.
 static bool serial_is_valid_cta2063a(const char *s)
 {
     size_t len = strlen(s);
@@ -188,7 +203,6 @@ static bool serial_is_valid_cta2063a(const char *s)
     int serial_len;
     if (lc >= '1' && lc <= '9')      serial_len = lc - '0';
     else if (lc >= 'A' && lc <= 'F') serial_len = lc - 'A' + 10;
-    else if (lc >= 'a' && lc <= 'f') serial_len = lc - 'a' + 10;
     else return false;
 
     if (len != (size_t)(5 + serial_len)) {
@@ -272,6 +286,12 @@ static bool apply_update_locked(remoteid_store_update_t *update)
 {
     switch (update->type) {
     case REMOTEID_STORE_UPDATE_BASIC_ID:
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT
+        // EU 2019/945: the serial number of the Remote ID system cannot be
+        // modified by the user, so it is only the one configured at build time.
+        ESP_LOGD(TAG, "ignored Basic ID from input source: strict mode uses the configured serial");
+        return true;
+#endif
         if (!normalize_uas_id(update->data.basic_id.id_type, update->data.basic_id.uas_id)) {
             ESP_LOGW(TAG, "rejected Basic ID: ID type %d with an empty or malformed UAS ID",
                      update->data.basic_id.id_type);
@@ -407,7 +427,8 @@ static bool apply_update_locked(remoteid_store_update_t *update)
             if (!same_set) {
                 s_state.ext_auth_pages_received = 0;
             }
-            s_state.ext_auth_last_page = page->LastPageIndex;
+            s_state.ext_auth_last_page  = page->LastPageIndex;
+            s_state.ext_auth_updated_ms = now_ms();
         }
         s_state.ext_auth_pages[page->DataPage] = *page;
         s_state.ext_auth_pages_received |= (uint16_t)(1u << page->DataPage);
@@ -590,4 +611,18 @@ remoteid_health_t remoteid_store_health(void)
     }
     xSemaphoreGive(s_state_mutex);
     return health;
+}
+
+const char *remoteid_store_health_text(remoteid_health_t health)
+{
+    switch (health) {
+    case REMOTEID_HEALTH_OK:                     return "";
+    case REMOTEID_HEALTH_SELFTEST_FAILED:        return "Remote ID self-test failed";
+    case REMOTEID_HEALTH_INVALID_SERIAL:         return "Invalid UAS serial (CTA-2063-A)";
+    case REMOTEID_HEALTH_WAITING_OPERATOR_ID:    return "Operator ID not set";
+    case REMOTEID_HEALTH_WAITING_BASIC_ID:       return "UAS ID not set";
+    case REMOTEID_HEALTH_TRANSPORTS_NOT_RUNNING: return "Remote ID transmitters not running";
+    case REMOTEID_HEALTH_LOCATION_STALE:         return "No fresh aircraft location";
+    }
+    return "Remote ID not ready";
 }

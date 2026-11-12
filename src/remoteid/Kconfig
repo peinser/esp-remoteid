@@ -62,42 +62,61 @@ config REMOTEID_IDENTITY_RUNTIME
         a flight controller or GCS. The module stays not-ready (no broadcast)
         until a valid Basic ID and Operator ID arrive. The static identity
         options below are hidden in this mode, since they would only be
-        overwritten by the incoming messages.
+        overwritten by the incoming messages. In strict compliance mode the
+        UAS ID and UA type stay configured here and only the Operator ID (and
+        System data) come from the flight controller or GCS.
 
 endchoice
 
 config REMOTEID_UAS_ID
     string "UAS ID (max 20 characters)"
-    depends on REMOTEID_IDENTITY_STATIC
+    depends on REMOTEID_IDENTITY_STATIC || REMOTEID_COMPLIANCE_STRICT
     default "CHANGE_ME_UAS_ID"
     help
-        Unique identifier for this drone. For self-built drones without a
-        manufacturer serial number, enter your national operator/CAA
-        registration number here and set the ID type to "CAA Registration ID".
-        For drones with a manufacturer serial number per ANSI/CTA-2063-A,
-        enter that number and set the ID type to "Serial Number".
-        Must be 20 characters or fewer.
+        The UAS ID broadcast in the Basic ID message. In the EU this is the
+        ANSI/CTA-2063-A serial number of the Remote ID system: for an add-on
+        module its own serial, for a built-in system the serial of the
+        aircraft. It has the form <4-character manufacturer code><length
+        character 1-F><serial>, using digits and upper-case letters without O
+        and I, e.g. "1ABC5XYZ12".
+
+        Outside strict compliance mode a CAA registration number can be used
+        instead (ID type "CAA Registration ID"). Must be 20 characters or fewer.
 
 config REMOTEID_OPERATOR_ID
     string "Operator registration ID (max 20 characters)"
     depends on REMOTEID_IDENTITY_STATIC
     default "CHANGE_ME_OP_ID"
     help
-        Your national pilot/operator registration number as issued by your
-        Civil Aviation Authority (e.g. "FIN87ASTRDGE12K8" for EASA). This
-        is broadcast in the Operator ID message. Must be 20 characters or
-        fewer.
+        Your national operator registration number as issued by your Civil
+        Aviation Authority. For an EU number enter it with its 3 secret
+        characters, e.g. "FIN87astrdge12k8-xyz": the checksum is verified
+        against the secret part and only the 16 public characters are
+        broadcast. Strict compliance mode accepts only this form.
 
 config REMOTEID_COMPLIANCE_STRICT
-    bool "Strict compliance mode (reject malformed identity)"
+    bool "Strict EU (EASA) compliance mode"
     default n
     help
-        Enforce conformance checks at runtime. Currently: a UAS serial number
-        (when the ID type is Serial Number) that is not valid ANSI/CTA-2063-A is
-        rejected and cleared, the device refuses to become ready (no broadcast),
-        the error indicator is shown, and OPEN_DRONE_ID_ARM_STATUS reports the
-        specific failure. When disabled, a malformed serial is logged as a
-        warning but still broadcast (development convenience).
+        Enforce the EU direct remote identification rules (Regulation (EU)
+        2019/945, Part 6 of the Annex) at runtime:
+
+        - The UAS ID is an ANSI/CTA-2063-A serial number configured at build
+          time. Basic ID messages from MAVLink or DroneCAN are ignored, so it
+          cannot be changed in operation. A malformed serial is never
+          broadcast: the device stays not-ready, shows the error indicator and
+          reports the failure to the autopilot.
+        - The operator ID must be the full EU registration number with its 3
+          secret characters. The checksum is verified and only the 16 public
+          characters are stored and broadcast.
+
+        A production device also needs Secure Boot and flash encryption, and
+        no unauthenticated OTA access, so the serial cannot be changed by
+        reflashing.
+
+        When disabled, a malformed serial is logged as a warning but still
+        broadcast, and a 16-character operator ID is accepted unverified
+        (development convenience).
 
 config REMOTEID_STARTUP_DELAY_MS
     int "Startup delay before transmissions (ms)"
@@ -331,16 +350,19 @@ endif # REMOTEID_MAVLINK_OPERATOR_LOCATION_LOOP
 endif # REMOTEID_MAVLINK_INPUT
 
 config REMOTEID_DRONECAN_INPUT
-    bool "Enable DroneCAN input"
+    bool "Enable DroneCAN (ArduPilot OpenDroneID over CAN)"
     default n
     help
-        Enable the ESP32 TWAI/CAN controller and listen for DroneCAN extended
-        CAN frames from a flight controller. DroneCAN is the maintained UAVCAN
-        v0-derived protocol used by current ArduPilot/PX4 DroneCAN devices;
-        it is distinct from OpenCyphal/UAVCAN v1. This first integration
-        milestone starts the CAN transport and decodes the standard DroneCAN
-        GNSS Fix2 message plus a project-specific Remote ID identity message
-        into the Remote ID state.
+        Join the CAN bus as a DroneCAN node and take the Remote ID data from
+        ArduPilot's OpenDroneID CAN backend (DID_CANDRIVER):
+
+        - receives dronecan.remoteid.BasicID, Location, SelfID, System and
+          OperatorID from the first node that sends them (the autopilot);
+        - sends dronecan.remoteid.ArmStatus and uavcan.protocol.NodeStatus at
+          1 Hz and answers uavcan.protocol.GetNodeInfo.
+
+        On ArduPilot set DID_ENABLE=1, DID_CANDRIVER to the CAN driver of this
+        bus (1 or 2) and DID_MAVPORT=-1. DroneCAN has no Authentication message.
 
 if REMOTEID_DRONECAN_INPUT
 
@@ -358,8 +380,7 @@ config REMOTEID_DRONECAN_TX_GPIO
     range -1 48
     help
         Physical ESP32-S3 GPIO connected to the CAN transceiver TXD input.
-        This must be configured when DroneCAN input is enabled, even for
-        passive listening, because the TWAI peripheral owns both pins.
+        This must be configured when DroneCAN is enabled.
 
 choice REMOTEID_DRONECAN_BITRATE
     prompt "DroneCAN bitrate"
@@ -380,45 +401,17 @@ config REMOTEID_DRONECAN_BITRATE_1000000
 endchoice
 
 config REMOTEID_DRONECAN_NODE_ID
-    int "Local DroneCAN node ID"
-    default 0
-    range 0 127
+    int "DroneCAN node ID"
+    default 100
+    range 1 125
     help
-        Local DroneCAN node ID reserved for future active participation.
-        Leave at 0 for the current receive-only implementation. The firmware
-        may acknowledge CAN frames in normal CAN mode, but it does not publish
-        DroneCAN application transfers yet.
-
-config REMOTEID_DRONECAN_ACCEPT_ANONYMOUS
-    bool "Accept anonymous DroneCAN transfers"
-    default y
-    help
-        Accept message transfers from anonymous source node ID 0. Disable if
-        your bus uses node ID 0 only for allocation and you want to ignore it.
-
-config REMOTEID_DRONECAN_LISTEN_ONLY
-    bool "Use CAN listen-only mode"
-    default n
-    help
-        Put the ESP32 TWAI controller into listen-only mode. In listen-only
-        mode the ESP receives frames but does not acknowledge them on the CAN
-        bus. Leave this disabled for normal FC-to-ESP operation, especially if
-        the ESP is the only other CAN node, because the flight controller needs
-        at least one receiver to ACK transmitted frames.
-
-config REMOTEID_DRONECAN_REMOTEID_IDENTITY_DTID
-    int "Remote ID identity DroneCAN data type ID"
-    default 20990
-    range 1024 32767
-    help
-        Vendor-specific DroneCAN message data type ID used for the custom
-        com.peinser.remoteid.Identity message. The publisher and this firmware
-        must use the same ID. The default 20990 is unused by the public
-        DroneCAN DSDL set; 20000 is ardupilot.indication.SafetyState, which
-        ArduPilot publishes, and 20030-20035 are dronecan.remoteid.*.
+        Static DroneCAN node ID of this module. It must be unique on the bus.
+        ArduPilot's node allocation server accepts static node IDs; pick one it
+        has not allocated to another device (see CAN_D1_UC_NODE and the node
+        list in the ground station).
 
 config REMOTEID_DRONECAN_TASK_STACK
-    int "DroneCAN input task stack size"
+    int "DroneCAN task stack size"
     default 4096
     range 3072 8192
 
@@ -426,14 +419,11 @@ endif # REMOTEID_DRONECAN_INPUT
 
 choice REMOTEID_ID_TYPE
     prompt "UAS ID type"
-    depends on REMOTEID_IDENTITY_STATIC
-    default REMOTEID_ID_TYPE_CAA_REG
+    depends on REMOTEID_IDENTITY_STATIC && !REMOTEID_COMPLIANCE_STRICT
+    default REMOTEID_ID_TYPE_SERIAL_NUMBER
     help
-        ASTM F3411 ID type encoded in the BasicID message.
-        For self-built drones without a CTA-2063-A serial number, select
-        "CAA Registration ID" and enter your national registration number
-        as the UAS ID. Select "Serial Number" only if you have a
-        manufacturer-issued serial number in ANSI/CTA-2063-A format.
+        ASTM F3411 ID type encoded in the BasicID message. The EU requires the
+        ANSI/CTA-2063-A serial number; strict compliance mode always uses it.
 
 config REMOTEID_ID_TYPE_SERIAL_NUMBER
     bool "Serial Number (ANSI/CTA-2063-A)"
@@ -445,7 +435,7 @@ endchoice
 
 choice REMOTEID_UA_TYPE
     prompt "UA type"
-    depends on REMOTEID_IDENTITY_STATIC
+    depends on REMOTEID_IDENTITY_STATIC || REMOTEID_COMPLIANCE_STRICT
     default REMOTEID_UA_TYPE_MULTIROTOR
     help
         Aircraft type declared in the BasicID message.
@@ -609,10 +599,11 @@ config REMOTEID_BLE_TX_INTERVAL_MS
     depends on REMOTEID_TRANSPORT_BLE || REMOTEID_TRANSPORT_BLE5_LONG_RANGE
     help
         Interval between BLE advertisement payload rotations. The schedule has
-        10 slots (Location in every other slot) plus up to four 100 ms
-        authentication slots. At the 260 ms maximum Location is still sent at
-        least once per second and every other message at least every 3 s
-        (10 x 260 + 400 = 3000 ms); larger values would break those rates.
+        9 slots (Location and System in every third slot) plus up to four
+        100 ms authentication slots between them. At the 260 ms maximum
+        Location and System are still sent at least once per second
+        (3 x 260 + 200 = 980 ms) and every other message at least every 3 s
+        (9 x 260 + 400 = 2740 ms); larger values would break those rates.
 
 config REMOTEID_INDICATOR_RGB_ENABLE
     bool "Enable onboard RGB status indicator"
@@ -826,19 +817,47 @@ endmenu
 
 menu "Authentication"
 
+choice REMOTEID_AUTH_SOURCE
+    prompt "Authentication message source"
+    default REMOTEID_AUTH_RELAY
+    help
+        Where the broadcast Authentication pages come from. Exactly one source
+        is used, so pages of two signatures are never mixed.
+
+config REMOTEID_AUTH_RELAY
+    bool "Relay from MAVLink (ground station or autopilot)"
+    depends on REMOTEID_MAVLINK_INPUT
+    help
+        Broadcast the Authentication pages received in
+        OPEN_DRONE_ID_AUTHENTICATION or inside OPEN_DRONE_ID_MESSAGE_PACK,
+        byte for byte as the signer produced them. A set goes on air once
+        page 0 and every page up to its last page index have arrived, and is
+        dropped when page 0 has not been received for 10 s.
+
+        The signer must sign what this module broadcasts. UAS ID, Operator
+        ID, Network Remote ID and specific-method pages verify as relayed. A
+        message set signature only verifies if it covers the exact messages
+        this module encodes and broadcasts. DroneCAN has no Authentication
+        message, so this needs MAVLink input.
+
+config REMOTEID_AUTH_NONE
+    bool "None"
+
 config REMOTEID_AUTH_ED25519
-    bool "Enable Ed25519 message set authentication (F3411-22a)"
-    default n
+    bool "Local Ed25519 message set signature (key on this module)"
     help
         Signs the message set (Basic ID + Location + System + Operator ID +
-        Self ID, 125 bytes, in that order) using Ed25519 and broadcasts the
+        Self ID, 125 bytes, in that order) followed by the 4-byte
+        little-endian page 0 timestamp, using Ed25519, and broadcasts the
         64-byte signature across four authentication pages (ASTM F3411-22a
-        message set signature).
+        message set signature). The signing key lives on this module.
 
         The private key is read from REMOTEID_AUTH_PRIVATE_KEY_PEM or NVS
         (PKCS#8 PEM format). The corresponding public key is derived and
         logged at startup. Register it with your CA or verification service.
         A missing or invalid key is reported as a Remote ID system failure.
+
+endchoice
 
 config REMOTEID_AUTH_PRIVATE_KEY_PEM
     string "Ed25519 private key (PKCS#8 PEM)"
@@ -861,8 +880,8 @@ config REMOTEID_AUTH_PRIVATE_KEY_PEM
         The corresponding public key is logged at INFO level on startup.
         Register it with your CA or verification service.
 
-        Keep this value secret. Do not commit sdkconfig to source control
-        when a real key is configured. Use sdkconfig.dev for development.
+        Keep this value secret: never commit an sdkconfig that contains a
+        key. For production, leave this empty and provision the key in NVS.
 
 endmenu
 

@@ -119,3 +119,7 @@ bool remoteid_store_is_ready(void);
 
 // Current readiness health (the reason behind remoteid_store_is_ready()).
 remoteid_health_t remoteid_store_health(void);
+
+// Pre-arm failure text reported to the autopilot (OPEN_DRONE_ID_ARM_STATUS /
+// dronecan.remoteid.ArmStatus); "" when the health is OK.
+const char *remoteid_store_health_text(remoteid_health_t health);

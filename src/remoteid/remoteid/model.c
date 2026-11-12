@@ -4,11 +4,15 @@
 
 #include "config.h"
 
-#if CONFIG_REMOTEID_IDENTITY_STATIC
+// Strict compliance fixes the UAS ID at build time (EU 2019/945: the user cannot
+// modify the serial number), so it is configured even with a runtime identity.
+#define REMOTEID_CONFIGURED_UAS_ID (CONFIG_REMOTEID_IDENTITY_STATIC || CONFIG_REMOTEID_COMPLIANCE_STRICT)
+
+#if REMOTEID_CONFIGURED_UAS_ID
 
 static ODID_idtype_t configured_id_type(void)
 {
-#if CONFIG_REMOTEID_ID_TYPE_SERIAL_NUMBER
+#if CONFIG_REMOTEID_COMPLIANCE_STRICT || CONFIG_REMOTEID_ID_TYPE_SERIAL_NUMBER
     return ODID_IDTYPE_SERIAL_NUMBER;
 #else
     return ODID_IDTYPE_CAA_REGISTRATION_ID;
@@ -27,6 +31,10 @@ static ODID_uatype_t configured_ua_type(void)
     return ODID_UATYPE_HELICOPTER_OR_MULTIROTOR;
 #endif
 }
+
+#endif /* REMOTEID_CONFIGURED_UAS_ID */
+
+#if CONFIG_REMOTEID_IDENTITY_STATIC
 
 static ODID_category_EU_t configured_eu_category(void)
 {
@@ -68,20 +76,23 @@ esp_err_t remoteid_model_init(remoteid_state_t *state)
 {
     memset(state, 0, sizeof(*state));
 
-#if CONFIG_REMOTEID_IDENTITY_STATIC
-    strncpy(state->uas_id, REMOTEID_UAS_ID, sizeof(state->uas_id) - 1);
-    strncpy(state->operator_id, REMOTEID_OPERATOR_ID, sizeof(state->operator_id) - 1);
+    // Runtime identity: whatever is not configured stays empty and undeclared
+    // until a flight controller or GCS supplies it over MAVLink/DroneCAN. The
+    // readiness gate keeps the module from broadcasting until a valid Basic ID
+    // and Operator ID are present. (memset already cleared uas_id/operator_id.)
+#if REMOTEID_CONFIGURED_UAS_ID
+    strlcpy(state->uas_id, REMOTEID_UAS_ID, sizeof(state->uas_id));
     state->id_type     = configured_id_type();
     state->ua_type     = configured_ua_type();
+#else
+    state->id_type     = ODID_IDTYPE_NONE;
+    state->ua_type     = ODID_UATYPE_NONE;
+#endif
+#if CONFIG_REMOTEID_IDENTITY_STATIC
+    strlcpy(state->operator_id, REMOTEID_OPERATOR_ID, sizeof(state->operator_id));
     state->eu_category = configured_eu_category();
     state->eu_class    = configured_eu_class();
 #else
-    // Runtime identity: stay empty and undeclared until a flight controller or
-    // GCS supplies it over MAVLink/DroneCAN. The readiness gate keeps the module
-    // from broadcasting until a valid Basic ID and Operator ID arrive.
-    // (memset already cleared uas_id/operator_id.)
-    state->id_type     = ODID_IDTYPE_NONE;
-    state->ua_type     = ODID_UATYPE_NONE;
     state->eu_category = ODID_CATEGORY_EU_UNDECLARED;
     state->eu_class    = ODID_CLASS_EU_UNDECLARED;
 #endif

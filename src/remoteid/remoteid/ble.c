@@ -23,8 +23,7 @@
 #define REMOTEID_SERVICE_DATA_LEN    (2 + ODID_MESSAGE_SIZE)
 #define REMOTEID_LEGACY_ADV_DATA_LEN (1 + 1 + 2 + REMOTEID_SERVICE_DATA_LEN)
 #define REMOTEID_ADV_INTERVAL_100_MS 0x00a0
-// One full advertising window between auth pages: enough for one transmission on all 3 channels.
-// Auth pages are already consecutive in the schedule so the total burst is 4 x this value.
+// One full advertising window per auth page: enough for one transmission on all 3 channels.
 #define REMOTEID_BLE_AUTH_PAGE_INTERVAL_MS 100
 
 #ifndef CONFIG_REMOTEID_BLE_TX_INTERVAL_MS
@@ -46,48 +45,40 @@
 
 static const char *TAG = "remoteid_ble";
 
-// Auth pages are broadcast when either local Ed25519 signing or input-link
-// (MAVLink) authentication can supply them. The schedule reserves one slot per
-// ODID auth page; slots beyond the number of populated pages are skipped at
-// runtime without consuming an advertising interval (see the transport task).
-//
-// Rates with the default 250 ms interval: Location every 500 ms, every other
-// message once per 2.5 s cycle, plus up to 4 x 100 ms of auth pages (2.9 s).
-// The Kconfig interval range keeps Location within 1 s and the rest within 3 s.
-#if CONFIG_REMOTEID_AUTH_ED25519 || CONFIG_REMOTEID_MAVLINK_INPUT
+// Auth slots exist when an authentication source is configured. Slots beyond
+// the populated pages are skipped at runtime without consuming time.
+#if CONFIG_REMOTEID_AUTH_ED25519 || CONFIG_REMOTEID_AUTH_RELAY
 #define REMOTEID_BLE_AUTH_PAGES 1
 #else
 #define REMOTEID_BLE_AUTH_PAGES 0
 #endif
 
+// The schedule has one slot per auth page.
+_Static_assert(ODID_AUTH_MAX_PAGES == 4, "the BLE schedule carries exactly 4 auth page slots");
+
+// Location and System every third slot, the static messages and the auth pages
+// (100 ms each) spread between them. With the slot interval T (at most 260 ms):
+//   Location / System gap:     at most 3T + 2 x 100 ms = 980 ms   (1 s required)
+//   static messages and auth:  every 9T + 4 x 100 ms   = 2740 ms  (3 s required)
 static const uint8_t s_message_schedule[] = {
-    REMOTEID_MESSAGE_BASIC_ID,
-    REMOTEID_MESSAGE_LOCATION,
-    REMOTEID_MESSAGE_BASIC_ID,
     REMOTEID_MESSAGE_LOCATION,
     REMOTEID_MESSAGE_SYSTEM,
-    REMOTEID_MESSAGE_LOCATION,
-    REMOTEID_MESSAGE_OPERATOR_ID,
-    REMOTEID_MESSAGE_LOCATION,
-    REMOTEID_MESSAGE_SELF_ID,
-    REMOTEID_MESSAGE_LOCATION,
+    REMOTEID_MESSAGE_BASIC_ID,
 #if REMOTEID_BLE_AUTH_PAGES
     REMOTEID_MESSAGE_AUTH_0,
+#endif
+    REMOTEID_MESSAGE_LOCATION,
+    REMOTEID_MESSAGE_SYSTEM,
+    REMOTEID_MESSAGE_OPERATOR_ID,
+#if REMOTEID_BLE_AUTH_PAGES
     REMOTEID_MESSAGE_AUTH_1,
+#endif
+    REMOTEID_MESSAGE_LOCATION,
+    REMOTEID_MESSAGE_SYSTEM,
+    REMOTEID_MESSAGE_SELF_ID,
+#if REMOTEID_BLE_AUTH_PAGES
     REMOTEID_MESSAGE_AUTH_2,
     REMOTEID_MESSAGE_AUTH_3,
-    REMOTEID_MESSAGE_AUTH_4,
-    REMOTEID_MESSAGE_AUTH_5,
-    REMOTEID_MESSAGE_AUTH_6,
-    REMOTEID_MESSAGE_AUTH_7,
-    REMOTEID_MESSAGE_AUTH_8,
-    REMOTEID_MESSAGE_AUTH_9,
-    REMOTEID_MESSAGE_AUTH_10,
-    REMOTEID_MESSAGE_AUTH_11,
-    REMOTEID_MESSAGE_AUTH_12,
-    REMOTEID_MESSAGE_AUTH_13,
-    REMOTEID_MESSAGE_AUTH_14,
-    REMOTEID_MESSAGE_AUTH_15,
 #endif
 };
 
@@ -149,8 +140,8 @@ typedef struct {
     uint8_t                   counters[ODID_MSG_COUNTER_AMOUNT];
     size_t                    schedule_index;
     bool                      started;
-    // Last auth page index populated this cycle (0-based), or -1 if none are
-    // available. Set when the page-0 slot is reached and read for pages 1..N.
+    // Last auth page index of the set being broadcast (0-based), or -1 if none.
+    // Set at the page 0 slot; pages 1..N of the same set follow later in the cycle.
     int                       auth_last_page;
     uint8_t                   tx_failures;
 } ble_transport_ctx_t;
@@ -244,15 +235,10 @@ static void remoteid_ble_transport_task(void *arg)
             ESP_LOGE(TAG, "%s failed to encode static messages", ctx->label);
         } else if (is_auth_page) {
             if (page == 0) {
-                // Authentication received over the input link supersedes locally
-                // generated signatures. Either way the signed set is the bytes last
-                // broadcast for each message type; re-encoding Location/System here
-                // would diverge (their timestamps advance), failing verification.
-                int last_page = remoteid_auth_apply_external_bundle(&ctx->bundle, &snapshot);
-                if (last_page < 0) {
-                    last_page = remoteid_auth_sign_bundle(&ctx->bundle);
-                }
-                ctx->auth_last_page = last_page;
+                // A local signature covers the bytes last broadcast for each
+                // message type; re-encoding Location/System here would diverge
+                // (their timestamps advance) and fail verification.
+                ctx->auth_last_page = remoteid_auth_fill_bundle(&ctx->bundle, &snapshot);
             }
             if (page > ctx->auth_last_page) {
                 continue; // no signature available this cycle

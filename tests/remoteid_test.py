@@ -482,16 +482,18 @@ def scenario_selftest(driver, monitor, args):
     check("live operator location expires despite a cached SYSTEM relay", bool(expired),
           "" if expired else "did not expire - check operator-location loop / expiry window")
 
-    # 7. G5: a malformed CTA-2063-A serial. Informational (non-fatal): only a
-    #    strict-compliance build rejects it and surfaces it via ARM_STATUS; a normal
-    #    build keeps broadcasting (warning only), so this is not a pass/fail check.
+    # 7. G5: a malformed CTA-2063-A serial over MAVLink. Informational (non-fatal):
+    #    a normal build keeps broadcasting it (warning only); a strict-compliance
+    #    build ignores runtime Basic IDs altogether and keeps its configured serial,
+    #    so ARM_STATUS must not change.
     driver.basic_id("BAD-SERIAL!!")                       # not valid CTA-2063-A
     time.sleep(2.0)
     arm = monitor.snapshot()["arm_status"]
     if arm and "serial" in arm[1].lower():
-        print(f"  [info] strict mode: malformed serial rejected -> ARM_STATUS '{arm[1]}'")
+        print(f"  [info] malformed serial rejected -> ARM_STATUS '{arm[1]}'")
     else:
-        print("  [info] malformed serial not flagged (device not built with COMPLIANCE_STRICT)")
+        print("  [info] malformed serial not flagged (normal build warns only; "
+              "a strict build ignores runtime Basic IDs)")
 
     passed = sum(1 for _, ok, _ in results if ok)
     print(f"\n{passed}/{len(results)} checks passed.")
@@ -521,7 +523,9 @@ def main():
 
     p.add_argument("--uas-id", default="PNSR8TEST0001",
                    help="UAS serial (valid ANSI/CTA-2063-A: 4-char mfr code + hex length + serial)")
-    p.add_argument("--operator-id", default="BEL-OP-TEST-12345", help="operator registration ID")
+    p.add_argument("--operator-id", default="FIN87astrdge12k8-xyz",
+                   help="operator registration ID; EU form with the 3 secret characters "
+                        "(EASA's published example by default; strict builds require this form)")
     p.add_argument("--self-id", default="Peinser RemoteID test", help="free-text self ID")
 
     p.add_argument("--lat", type=float, default=50.8503, help="flight path center latitude")

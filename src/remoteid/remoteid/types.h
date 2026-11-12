@@ -12,24 +12,12 @@ typedef enum remoteid_message_index {
     REMOTEID_MESSAGE_OPERATOR_ID,
     REMOTEID_MESSAGE_SELF_ID,
     REMOTEID_MESSAGE_COUNT,
-    // Auth page indices start after base messages; not passed to encode functions.
+    // Auth page slots follow the base messages; not passed to encode functions.
     // One entry per ODID auth page (0 .. ODID_AUTH_MAX_PAGES - 1).
     REMOTEID_MESSAGE_AUTH_0 = REMOTEID_MESSAGE_COUNT,
     REMOTEID_MESSAGE_AUTH_1,
     REMOTEID_MESSAGE_AUTH_2,
     REMOTEID_MESSAGE_AUTH_3,
-    REMOTEID_MESSAGE_AUTH_4,
-    REMOTEID_MESSAGE_AUTH_5,
-    REMOTEID_MESSAGE_AUTH_6,
-    REMOTEID_MESSAGE_AUTH_7,
-    REMOTEID_MESSAGE_AUTH_8,
-    REMOTEID_MESSAGE_AUTH_9,
-    REMOTEID_MESSAGE_AUTH_10,
-    REMOTEID_MESSAGE_AUTH_11,
-    REMOTEID_MESSAGE_AUTH_12,
-    REMOTEID_MESSAGE_AUTH_13,
-    REMOTEID_MESSAGE_AUTH_14,
-    REMOTEID_MESSAGE_AUTH_15,
 } remoteid_message_index_t;
 
 typedef struct remoteid_state {
@@ -86,13 +74,13 @@ typedef struct remoteid_state {
     ODID_desctype_t self_id_type;
     char self_id_desc[ODID_STR_SIZE + 1];
 
-    // Authentication received over the input link (MAVLink/DroneCAN). When
-    // has_ext_auth is set, these pages are broadcast verbatim and supersede any
-    // locally generated signature. Pages are accumulated until 0..ext_auth_last_page
-    // have all been received.
+    // Authentication pages relayed from MAVLink (CONFIG_REMOTEID_AUTH_RELAY).
+    // Broadcast verbatim once page 0 and every page up to ext_auth_last_page
+    // belong to the same set, and only while page 0 keeps arriving.
     bool has_ext_auth;
     uint8_t ext_auth_last_page;                       // LastPageIndex from page 0
     uint16_t ext_auth_pages_received;                 // bitmask of received pages
+    uint32_t ext_auth_updated_ms;                     // esp_timer ms of the last page 0
     ODID_Auth_data ext_auth_pages[ODID_AUTH_MAX_PAGES];
 } remoteid_state_t;
 

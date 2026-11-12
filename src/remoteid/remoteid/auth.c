@@ -7,51 +7,60 @@
 #include "opendroneid.h"
 #include "sdkconfig.h"
 
+#if CONFIG_REMOTEID_AUTH_RELAY || CONFIG_REMOTEID_AUTH_ED25519
 static const char *TAG = "remoteid_auth";
+#endif
 
-// ---- External (input-link) authentication ----------------------------------
-// These do not require the signing key and are compiled in regardless of whether
-// local Ed25519 signing is enabled.
+#if CONFIG_REMOTEID_AUTH_RELAY
 
-int remoteid_auth_apply_external_bundle(remoteid_message_bundle_t *bundle, const remoteid_state_t *state)
+#include "esp_timer.h"
+
+// A relayed set is dropped once its page 0 has not arrived for this long, so a
+// signer that stops (or a link that drops) does not leave stale pages on air.
+#define REMOTEID_AUTH_RELAY_TIMEOUT_MS 10000
+
+// Last page of the relayed set, or -1 when there is no complete, current set.
+// The store only accepts pages the encoder can represent, so the index is in range.
+static int relayed_last_page(const remoteid_state_t *state)
 {
-    if (!state->has_ext_auth) {
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if (!state->has_ext_auth || now_ms - state->ext_auth_updated_ms > REMOTEID_AUTH_RELAY_TIMEOUT_MS) {
         return -1;
     }
+    return state->ext_auth_last_page;
+}
 
-    int last_page = state->ext_auth_last_page < ODID_AUTH_MAX_PAGES
-                    ? state->ext_auth_last_page : ODID_AUTH_MAX_PAGES - 1;
+esp_err_t remoteid_auth_init(void)
+{
+    return ESP_OK;
+}
 
+int remoteid_auth_fill_bundle(remoteid_message_bundle_t *bundle, const remoteid_state_t *state)
+{
+    int last_page = relayed_last_page(state);
     for (int page = 0; page <= last_page; page++) {
+        // Lossless: every Authentication field is carried, so the bytes on air
+        // are the bytes the signer produced.
         ODID_Auth_encoded encoded;
         if (encodeAuthMessage(&encoded, &state->ext_auth_pages[page]) != ODID_SUCCESS) {
-            ESP_LOGE(TAG, "failed to encode external auth page %d", page);
+            ESP_LOGE(TAG, "failed to encode relayed auth page %d", page);
             return -1;
         }
         memcpy(bundle->auth_pages[page], &encoded, ODID_MESSAGE_SIZE);
     }
-
     return last_page;
 }
 
-bool remoteid_auth_apply_external_uas_data(ODID_UAS_Data *uas_data, const remoteid_state_t *state)
+void remoteid_auth_fill_uas_data(ODID_UAS_Data *uas_data, const remoteid_state_t *state)
 {
-    if (!state->has_ext_auth) {
-        return false;
-    }
-
-    int last_page = state->ext_auth_last_page < ODID_AUTH_MAX_PAGES
-                    ? state->ext_auth_last_page : ODID_AUTH_MAX_PAGES - 1;
-
+    int last_page = relayed_last_page(state);
     for (int page = 0; page <= last_page; page++) {
-        uas_data->Auth[page]     = state->ext_auth_pages[page];
+        uas_data->Auth[page]      = state->ext_auth_pages[page];
         uas_data->AuthValid[page] = 1;
     }
-
-    return true;
 }
 
-#if CONFIG_REMOTEID_AUTH_ED25519
+#elif CONFIG_REMOTEID_AUTH_ED25519
 
 #include "clock.h"
 #include "mbedtls/base64.h"
@@ -134,15 +143,11 @@ static esp_err_t parse_pkcs8_ed25519(const char *pem, uint8_t seed[32])
 }
 
 static int fill_auth_pages(ODID_Auth_data pages[ODID_AUTH_MAX_PAGES],
-                           const uint8_t signature[64])
+                           const uint8_t signature[64], uint32_t timestamp)
 {
-    // Seconds since 2019-01-01 UTC like every other ODID timestamp; 0 until UTC is known.
-    uint32_t timestamp = remoteid_clock_odid_2019();
-
     // Compute how many pages are actually needed to carry 64 bytes.
-    // Receivers use LastPageIndex to know when collection is complete; setting
-    // it to ODID_AUTH_MAX_PAGES-1 (16-1=15) would cause receivers to wait
-    // forever for pages that are never broadcast.
+    // Receivers use LastPageIndex to know when collection is complete, so it
+    // must name the last page actually broadcast, not ODID_AUTH_MAX_PAGES - 1.
     int remaining_after_page0 = 64 - ODID_AUTH_PAGE_ZERO_DATA_SIZE;
     int extra_pages = (remaining_after_page0 + ODID_AUTH_PAGE_NONZERO_DATA_SIZE - 1)
                       / ODID_AUTH_PAGE_NONZERO_DATA_SIZE;
@@ -182,9 +187,8 @@ static int fill_auth_pages(ODID_Auth_data pages[ODID_AUTH_MAX_PAGES],
 // Maximum PEM size: ~120 bytes in practice; 256 gives comfortable headroom.
 #define REMOTEID_AUTH_PEM_BUF_SIZE  256
 
-// Load the private key PEM from compiled-in Kconfig value (development) or
-// NVS (production). Compiled-in key takes priority so sdkconfig.dev workflow
-// is unaffected when both are present.
+// Load the private key PEM from the compiled-in Kconfig value (development) or
+// NVS (production). The compiled-in key takes priority when both are present.
 static esp_err_t load_private_key_pem(char *buf, size_t buf_size)
 {
     if (strlen(CONFIG_REMOTEID_AUTH_PRIVATE_KEY_PEM) > 0) {
@@ -241,40 +245,55 @@ esp_err_t remoteid_auth_init(void)
     return ESP_OK;
 }
 
-int remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle)
-{
-    if (!s_key_loaded) {
-        return -1;
-    }
-    uint8_t message_set[REMOTEID_MESSAGE_COUNT * ODID_MESSAGE_SIZE];
+#define REMOTEID_MESSAGE_SET_SIZE (REMOTEID_MESSAGE_COUNT * ODID_MESSAGE_SIZE)
 
-    for (int i = 0; i < REMOTEID_MESSAGE_COUNT; i++) {
-        memcpy(message_set + i * ODID_MESSAGE_SIZE, bundle->messages[i], ODID_MESSAGE_SIZE);
+// Sign the message set followed by the page 0 timestamp (uint32, little-endian).
+// Covering the timestamp keeps a recorded signature from being rebroadcast with
+// a fresh one. The timestamp is seconds since 2019-01-01 UTC, 0 until UTC is known.
+static int sign_message_set(const uint8_t message_set[REMOTEID_MESSAGE_COUNT][ODID_MESSAGE_SIZE],
+                            ODID_Auth_data pages[ODID_AUTH_MAX_PAGES])
+{
+    uint32_t timestamp = remoteid_clock_odid_2019();
+    uint8_t signed_data[REMOTEID_MESSAGE_SET_SIZE + sizeof(timestamp)];
+    memcpy(signed_data, message_set, REMOTEID_MESSAGE_SET_SIZE);
+    for (size_t i = 0; i < sizeof(timestamp); i++) {
+        signed_data[REMOTEID_MESSAGE_SET_SIZE + i] = (uint8_t)(timestamp >> (8 * i));
     }
 
     uint8_t signature[64];
-    crypto_ed25519_sign(signature, s_private_key, message_set, sizeof(message_set));
+    crypto_ed25519_sign(signature, s_private_key, signed_data, sizeof(signed_data));
+    return fill_auth_pages(pages, signature, timestamp);
+}
 
-    ODID_Auth_data auth_data[ODID_AUTH_MAX_PAGES] = {0};
-    int last_page = fill_auth_pages(auth_data, signature);
+int remoteid_auth_fill_bundle(remoteid_message_bundle_t *bundle, const remoteid_state_t *state)
+{
+    (void)state;
+    if (!s_key_loaded) {
+        return -1;
+    }
+
+    // bundle->messages is in message set order.
+    ODID_Auth_data pages[ODID_AUTH_MAX_PAGES];
+    int last_page = sign_message_set(bundle->messages, pages);
 
     for (int page = 0; page <= last_page; page++) {
         ODID_Auth_encoded encoded;
-        if (encodeAuthMessage(&encoded, &auth_data[page]) != ODID_SUCCESS) {
+        if (encodeAuthMessage(&encoded, &pages[page]) != ODID_SUCCESS) {
             ESP_LOGE(TAG, "failed to encode auth page %d", page);
             return -1;
         }
         memcpy(bundle->auth_pages[page], &encoded, ODID_MESSAGE_SIZE);
     }
-
     return last_page;
 }
 
-void remoteid_auth_sign_uas_data(ODID_UAS_Data *uas_data)
+void remoteid_auth_fill_uas_data(ODID_UAS_Data *uas_data, const remoteid_state_t *state)
 {
+    (void)state;
     if (!s_key_loaded) {
         return;
     }
+
     ODID_BasicID_encoded    basic_id;
     ODID_Location_encoded   location;
     ODID_System_encoded     system;
@@ -290,29 +309,39 @@ void remoteid_auth_sign_uas_data(ODID_UAS_Data *uas_data)
         return;
     }
 
-    // Order must match remoteid_encode_static_messages / the bundle layout so a
-    // verifier reconstructs the same signed set across BLE and Wi-Fi transports.
-    uint8_t message_set[REMOTEID_MESSAGE_COUNT * ODID_MESSAGE_SIZE];
-    memcpy(message_set + REMOTEID_MESSAGE_BASIC_ID    * ODID_MESSAGE_SIZE, &basic_id,    ODID_MESSAGE_SIZE);
-    memcpy(message_set + REMOTEID_MESSAGE_LOCATION    * ODID_MESSAGE_SIZE, &location,    ODID_MESSAGE_SIZE);
-    memcpy(message_set + REMOTEID_MESSAGE_SYSTEM      * ODID_MESSAGE_SIZE, &system,      ODID_MESSAGE_SIZE);
-    memcpy(message_set + REMOTEID_MESSAGE_OPERATOR_ID * ODID_MESSAGE_SIZE, &operator_id, ODID_MESSAGE_SIZE);
-    memcpy(message_set + REMOTEID_MESSAGE_SELF_ID     * ODID_MESSAGE_SIZE, &self_id,     ODID_MESSAGE_SIZE);
+    // Same order as the BLE bundle (remoteid_message_index_t), so a verifier
+    // reconstructs the same signed set on every transport.
+    uint8_t message_set[REMOTEID_MESSAGE_COUNT][ODID_MESSAGE_SIZE];
+    memcpy(message_set[REMOTEID_MESSAGE_BASIC_ID],    &basic_id,    ODID_MESSAGE_SIZE);
+    memcpy(message_set[REMOTEID_MESSAGE_LOCATION],    &location,    ODID_MESSAGE_SIZE);
+    memcpy(message_set[REMOTEID_MESSAGE_SYSTEM],      &system,      ODID_MESSAGE_SIZE);
+    memcpy(message_set[REMOTEID_MESSAGE_OPERATOR_ID], &operator_id, ODID_MESSAGE_SIZE);
+    memcpy(message_set[REMOTEID_MESSAGE_SELF_ID],     &self_id,     ODID_MESSAGE_SIZE);
 
-    uint8_t signature[64];
-    crypto_ed25519_sign(signature, s_private_key, message_set, sizeof(message_set));
-
-    int last_page = fill_auth_pages(uas_data->Auth, signature);
-
+    int last_page = sign_message_set(message_set, uas_data->Auth);
     for (int page = 0; page <= last_page; page++) {
         uas_data->AuthValid[page] = 1;
     }
 }
 
-#else // !CONFIG_REMOTEID_AUTH_ED25519
+#else // CONFIG_REMOTEID_AUTH_NONE
 
-esp_err_t remoteid_auth_init(void) { return ESP_OK; }
-int remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle) { (void)bundle; return -1; }
-void remoteid_auth_sign_uas_data(ODID_UAS_Data *uas_data) { (void)uas_data; }
+esp_err_t remoteid_auth_init(void)
+{
+    return ESP_OK;
+}
+
+int remoteid_auth_fill_bundle(remoteid_message_bundle_t *bundle, const remoteid_state_t *state)
+{
+    (void)bundle;
+    (void)state;
+    return -1;
+}
+
+void remoteid_auth_fill_uas_data(ODID_UAS_Data *uas_data, const remoteid_state_t *state)
+{
+    (void)uas_data;
+    (void)state;
+}
 
 #endif
