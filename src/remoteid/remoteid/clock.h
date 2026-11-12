@@ -7,25 +7,21 @@
 // It lands exactly on an hour boundary, which the seconds-after-hour helper relies on.
 #define REMOTEID_ODID_EPOCH_2019 1546300800ULL
 
-// Shared wall clock for all OpenDroneID timestamp fields. Seeded from an absolute
-// UTC source (MAVLink SYSTEM_TIME today; GNSS later); until then it reports
-// monotonic uptime-based fallbacks that callers should treat as low-confidence
-// (e.g. encode timestamp accuracy as UNKNOWN).
+// Shared UTC clock for every OpenDroneID timestamp, both broadcast over RF and
+// sent back over MAVLink. It is seeded from the bound autopilot's SYSTEM_TIME.
+// Until then there is no UTC: callers get "unknown" values, never uptime.
 
-// Seed from an absolute UTC time in Unix epoch seconds. Implausibly small values
-// (no real time yet) are ignored. Safe to call from the MAVLink RX task.
-void remoteid_clock_set_utc(uint64_t unix_seconds);
+// Seed from an absolute UTC time in Unix epoch microseconds. Values before 2019
+// (no real time yet) are ignored.
+void remoteid_clock_set_utc_us(uint64_t unix_us);
 
 // True once a plausible UTC time has been seeded.
 bool remoteid_clock_is_synced(void);
 
-// Current UTC as Unix epoch seconds, or 0 when never synced.
-uint64_t remoteid_clock_unix(void);
-
-// Seconds since the ODID 2019 epoch (OPEN_DRONE_ID_SYSTEM / SYSTEM_UPDATE).
-// Monotonic uptime fallback when unsynced.
+// Seconds since the ODID 2019 epoch (System, SystemUpdate, Authentication), or 0
+// when unsynced.
 uint32_t remoteid_clock_odid_2019(void);
 
-// Seconds after the full UTC hour, 0..3600 (OPEN_DRONE_ID_LOCATION timestamp).
-// Monotonic (not hour-aligned) fallback when unsynced.
+// Seconds after the full UTC hour, 0..3600 with sub-second resolution (Location
+// timestamp), or -1 when unsynced.
 float remoteid_clock_seconds_after_hour(void);

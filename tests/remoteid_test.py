@@ -224,14 +224,16 @@ class Driver:
             self.a.target_system, self.a.target_component, self.id_or_mac,
             mavlink.MAV_ODID_DESC_TYPE_TEXT, _bytes(self.a.self_id, 23))
 
-    def system(self, location_type):
+    def system(self, location_type, timestamp=None):
+        # timestamp: ODID-2019 seconds; pass a fixed value to mimic an autopilot
+        # relaying a cached SYSTEM packet.
         self.conn.mav.open_drone_id_system_send(
             self.a.target_system, self.a.target_component, self.id_or_mac,
             location_type, mavlink.MAV_ODID_CLASSIFICATION_TYPE_EU,
             int(self.a.operator_lat * 1e7), int(self.a.operator_lon * 1e7),
             1, 0, -1000.0, -1000.0,
             mavlink.MAV_ODID_CATEGORY_EU_OPEN, mavlink.MAV_ODID_CLASS_EU_CLASS_1,
-            float(self.a.operator_alt), odid_timestamp_now())
+            float(self.a.operator_alt), odid_timestamp_now() if timestamp is None else timestamp)
 
     def system_update(self, lat, lon, alt):
         self.conn.mav.open_drone_id_system_update_send(
@@ -454,18 +456,30 @@ def scenario_selftest(driver, monitor, args):
               f"({'looks like uptime - clock unseeded?' if device_ts < 100000000 else 'off by >60s'})")
 
     # 6. Live operator location expires when updates stop.
+    #    The aircraft stays fresh and the autopilot keeps relaying the last SYSTEM
+    #    with its original timestamp: only a newer source timestamp may refresh
+    #    the operator location, so it must still expire.
     def feed_live():
         driver.heartbeat()
         driver.system_time()
         driver.identity()
+        driver.location(*moving_position(args, 0))
         driver.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS)
         driver.system_update(args.operator_lat, args.operator_lon, args.operator_alt)
 
     wait_for(lambda: (monitor.snapshot()["arm_status"] or (1,))[0] == 0, 6, feed_live)
-    print("  (live operator set; stopping updates, waiting for expiry...)")
+    frozen = odid_timestamp_now()
+
+    def feed_cached_relay():
+        driver.heartbeat()
+        driver.location(*moving_position(args, 0))
+        driver.system(mavlink.MAV_ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS, timestamp=frozen)
+
+    print("  (live operator set; GCS stops, autopilot relays the cached SYSTEM, waiting for expiry...)")
     expired = wait_for(
-        lambda: (monitor.snapshot()["arm_status"] or (0,))[0] != 0, 15, lambda: None)
-    check("live operator location expires -> PRE_ARM_FAIL when updates stop", bool(expired),
+        lambda: "operator" in ((monitor.snapshot()["arm_status"] or (0, ""))[1]).lower(), 15,
+        feed_cached_relay)
+    check("live operator location expires despite a cached SYSTEM relay", bool(expired),
           "" if expired else "did not expire - check operator-location loop / expiry window")
 
     # 7. G5: a malformed CTA-2063-A serial. Informational (non-fatal): only a

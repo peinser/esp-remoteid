@@ -33,7 +33,8 @@ typedef enum remoteid_message_index {
 } remoteid_message_index_t;
 
 typedef struct remoteid_state {
-    // Basic ID
+    // Basic ID. uas_id holds the 20 raw ID bytes plus an always-zero terminator:
+    // NUL-padded ASCII for serial / CAA IDs, binary for UUID / session IDs.
     char uas_id[ODID_ID_SIZE + 1];
     char operator_id[ODID_ID_SIZE + 1];
     ODID_idtype_t id_type;
@@ -57,6 +58,8 @@ typedef struct remoteid_state {
     ODID_Speed_accuracy_t speed_acc;
     ODID_Timestamp_accuracy_t ts_acc;
     float timestamp;                        // seconds after the UTC hour, or < 0 if unknown
+    // esp_timer milliseconds when the last Location update arrived; 0 = never.
+    uint32_t location_updated_ms;
 
     // System / operator
     bool has_operator_position;
@@ -71,8 +74,11 @@ typedef struct remoteid_state {
     ODID_classification_type_t classification_type;
     ODID_category_EU_t eu_category;
     ODID_class_EU_t eu_class;
-    // esp_timer milliseconds when the operator position was last refreshed; used
-    // to expire a live (LIVE_GNSS) operator location when GCS updates stop.
+    // Source timestamp (seconds since 2019-01-01 UTC) of the operator position,
+    // and the esp_timer milliseconds when that timestamp last advanced. A relay
+    // repeating a cached packet does not advance it, so a live (LIVE_GNSS)
+    // operator location still expires when the GCS stops sending.
+    uint32_t operator_position_timestamp;
     uint32_t operator_position_updated_ms;
 
     // Self ID

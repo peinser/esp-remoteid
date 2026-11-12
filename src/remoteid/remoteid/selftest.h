@@ -2,12 +2,13 @@
 
 #include <stdbool.h>
 
-// Record a transport's initialisation result. Call once per transport right after
-// remoteid_ble_start() / remoteid_wifi_start().
-void remoteid_selftest_report_transport(const char *name, bool ok);
+// Record a component's health: transport initialisation, key loading, or a
+// persistent runtime transmit/encode failure. A single failure latches the
+// Remote ID system-failure state.
+void remoteid_selftest_report(const char *component, bool ok);
 
-// True while the Remote ID system is healthy (all reported transports initialised
-// and no runtime fault detected). Consumed by the ARM_STATUS / arm-readiness path.
+// True once the transports have been started and no fault has been reported.
+// Part of the readiness reported over ARM_STATUS and on the status indicator.
 bool remoteid_selftest_ok(void);
 
 // Start the self-test monitor. On failure it raises the error indicator and pushes

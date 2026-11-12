@@ -1,5 +1,6 @@
 #include "auth.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -52,7 +53,7 @@ bool remoteid_auth_apply_external_uas_data(ODID_UAS_Data *uas_data, const remote
 
 #if CONFIG_REMOTEID_AUTH_ED25519
 
-#include "esp_timer.h"
+#include "clock.h"
 #include "mbedtls/base64.h"
 #include "monocypher-ed25519.h"
 #include "nvs.h"
@@ -67,6 +68,8 @@ static const uint8_t PKCS8_ED25519_PREFIX[16] = {
 };
 
 static uint8_t s_private_key[64];
+// False until a key is loaded; signing is skipped rather than done with a zero key.
+static bool s_key_loaded;
 
 // Advance past a real newline (0x0a) or the two-character escape sequence \n.
 // Returns pointer to the first character after the newline, or NULL.
@@ -133,7 +136,8 @@ static esp_err_t parse_pkcs8_ed25519(const char *pem, uint8_t seed[32])
 static int fill_auth_pages(ODID_Auth_data pages[ODID_AUTH_MAX_PAGES],
                            const uint8_t signature[64])
 {
-    uint32_t timestamp = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    // Seconds since 2019-01-01 UTC like every other ODID timestamp; 0 until UTC is known.
+    uint32_t timestamp = remoteid_clock_odid_2019();
 
     // Compute how many pages are actually needed to carry 64 bytes.
     // Receivers use LastPageIndex to know when collection is complete; setting
@@ -226,13 +230,22 @@ esp_err_t remoteid_auth_init(void)
     uint8_t public_key[32];
     crypto_ed25519_key_pair(s_private_key, public_key, seed);
     crypto_wipe(seed, sizeof(seed));
-    crypto_wipe(public_key, sizeof(public_key));
+    s_key_loaded = true;
+
+    char public_hex[2 * sizeof(public_key) + 1];
+    for (size_t i = 0; i < sizeof(public_key); i++) {
+        snprintf(&public_hex[2 * i], 3, "%02x", public_key[i]);
+    }
+    ESP_LOGI(TAG, "Ed25519 authentication enabled, public key: %s", public_hex);
 
     return ESP_OK;
 }
 
 int remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle)
 {
+    if (!s_key_loaded) {
+        return -1;
+    }
     uint8_t message_set[REMOTEID_MESSAGE_COUNT * ODID_MESSAGE_SIZE];
 
     for (int i = 0; i < REMOTEID_MESSAGE_COUNT; i++) {
@@ -259,6 +272,9 @@ int remoteid_auth_sign_bundle(remoteid_message_bundle_t *bundle)
 
 void remoteid_auth_sign_uas_data(ODID_UAS_Data *uas_data)
 {
+    if (!s_key_loaded) {
+        return;
+    }
     ODID_BasicID_encoded    basic_id;
     ODID_Location_encoded   location;
     ODID_System_encoded     system;

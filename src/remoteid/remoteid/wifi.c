@@ -14,9 +14,12 @@
 #include "freertos/task.h"
 #include "opendroneid.h"
 #include "sdkconfig.h"
+#include "selftest.h"
 #include "store.h"
 
 #define REMOTEID_WIFI_FRAME_BUF_SIZE 512
+// Consecutive failed transmissions before the transport is reported as failed.
+#define REMOTEID_WIFI_TX_FAILURE_LIMIT 5
 
 #ifndef CONFIG_REMOTEID_WIFI_BEACON_SSID
 #define CONFIG_REMOTEID_WIFI_BEACON_SSID "OpenDroneID"
@@ -65,6 +68,18 @@ static uint16_t beacon_interval_tu(void)
     return (uint16_t)(CONFIG_REMOTEID_WIFI_BEACON_TX_INTERVAL_MS * 1000U / 1024U);
 }
 #endif
+
+// Count consecutive failures; a run of them latches a Remote ID system failure.
+static void record_tx_result(const char *transport, uint8_t *failures, bool ok)
+{
+    if (ok) {
+        *failures = 0;
+        return;
+    }
+    if (++*failures == REMOTEID_WIFI_TX_FAILURE_LIMIT) {
+        remoteid_selftest_report(transport, false);
+    }
+}
 
 static void log_transmitted_message_types(const char *transport, const ODID_UAS_Data *uas_data)
 {
@@ -235,16 +250,23 @@ static void remoteid_wifi_beacon_task(void *arg)
     ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
     ESP_LOGI(TAG, "Wi-Fi Beacon transport identity ready, starting transmissions");
 
+    uint8_t failures = 0;
+    // Fixed cadence: the period does not stretch by the encode/sign time, so a
+    // 1000 ms interval really delivers Location at 1 Hz.
+    TickType_t last_wake = xTaskGetTickCount();
     while (true) {
         if (!remoteid_store_is_ready()) {
             ESP_LOGW(TAG, "Wi-Fi Beacon transport paused until Remote ID identity is ready again");
             ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
+            last_wake = xTaskGetTickCount();
         }
 
-        if (send_remoteid_beacon() == ESP_OK) {
+        bool ok = send_remoteid_beacon() == ESP_OK;
+        record_tx_result("Wi-Fi Beacon", &failures, ok);
+        if (ok) {
             ESP_LOGD(TAG, "transmitted OpenDroneID Wi-Fi Beacon");
         }
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_REMOTEID_WIFI_BEACON_TX_INTERVAL_MS));
+        xTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONFIG_REMOTEID_WIFI_BEACON_TX_INTERVAL_MS));
     }
 }
 #endif
@@ -258,16 +280,23 @@ static void remoteid_wifi_nan_task(void *arg)
     ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
     ESP_LOGI(TAG, "Wi-Fi NAN transport identity ready, starting transmissions");
 
+    uint8_t failures = 0;
+    // Fixed cadence: the period does not stretch by the encode/sign time, so a
+    // 1000 ms interval really delivers Location at 1 Hz.
+    TickType_t last_wake = xTaskGetTickCount();
     while (true) {
         if (!remoteid_store_is_ready()) {
             ESP_LOGW(TAG, "Wi-Fi NAN transport paused until Remote ID identity is ready again");
             ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
+            last_wake = xTaskGetTickCount();
         }
 
-        if (send_remoteid_nan() == ESP_OK) {
+        bool ok = send_remoteid_nan() == ESP_OK;
+        record_tx_result("Wi-Fi NAN", &failures, ok);
+        if (ok) {
             ESP_LOGD(TAG, "transmitted OpenDroneID Wi-Fi NAN");
         }
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_REMOTEID_WIFI_NAN_TX_INTERVAL_MS));
+        xTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONFIG_REMOTEID_WIFI_NAN_TX_INTERVAL_MS));
     }
 }
 #endif

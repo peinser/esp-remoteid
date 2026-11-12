@@ -4,6 +4,7 @@
 
 #if CONFIG_REMOTEID_MAVLINK_INPUT
 
+#include <math.h>
 #include <string.h>
 
 #pragma GCC diagnostic push
@@ -23,7 +24,12 @@
 #include "store.h"
 
 #define REMOTEID_MAVLINK_BUF_SIZE      256
+// Driver ring buffers: room for several MESSAGE_PACK frames while the task is busy.
+#define REMOTEID_MAVLINK_RING_SIZE     2048
 #define REMOTEID_MAVLINK_QUEUE_SIZE    0
+// Read returns after this long without new bytes, so a frame is parsed as soon
+// as it has arrived instead of waiting for a full read buffer.
+#define REMOTEID_MAVLINK_READ_TIMEOUT_MS 10
 #define REMOTEID_MAVLINK_TASK_PRIORITY 5
 
 // True when the firmware transmits MAVLink back to the autopilot (status output
@@ -37,11 +43,11 @@
 
 static const char *TAG = "remoteid_mavlink";
 
-#if REMOTEID_MAVLINK_OUTPUT
-// System ID adopted from the flight controller's HEARTBEAT; 0 until one is seen.
-// Single-byte access is atomic on this target, so no lock is needed.
+// The autopilot this module belongs to: bound to the first HEARTBEAT from an
+// autopilot component (MAV_COMP_ID_AUTOPILOT1) of the configured target system,
+// or of any system when none is configured, and never re-bound. Arm state and
+// UTC are only taken from it. 0 until bound; single-byte access is atomic.
 static volatile uint8_t s_autopilot_sysid;
-#endif
 
 static bool target_matches(uint8_t target_system, uint8_t target_component)
 {
@@ -60,6 +66,44 @@ static bool target_matches(uint8_t target_system, uint8_t target_component)
     return true;
 }
 
+// Own-aircraft data only. id_or_mac is set when a message describes another UA
+// picked up by a Remote ID receiver, and the ODID transmitter/receiver
+// components (236-238) are such receivers. Target 0/0 alone does not make a
+// message about this aircraft.
+static bool from_own_aircraft(const mavlink_message_t *message, const uint8_t *id_or_mac)
+{
+    if (message->compid >= MAV_COMP_ID_ODID_TXRX_1 && message->compid <= MAV_COMP_ID_ODID_TXRX_3) {
+        return false;
+    }
+    for (size_t i = 0; id_or_mac && i < 20; i++) {
+        if (id_or_mac[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// id_or_mac is NULL for messages without that field (SYSTEM_UPDATE).
+static bool accept_odid(const mavlink_message_t *message, uint8_t target_system, uint8_t target_component,
+                        const uint8_t *id_or_mac, const char *name)
+{
+    if (!target_matches(target_system, target_component)) {
+        ESP_LOGD(TAG, "ignored %s for target system=%u component=%u", name, target_system, target_component);
+        return false;
+    }
+    if (!from_own_aircraft(message, id_or_mac)) {
+        ESP_LOGD(TAG, "ignored %s describing another aircraft (from %u/%u)", name, message->sysid, message->compid);
+        return false;
+    }
+    return true;
+}
+
+static bool from_bound_autopilot(const mavlink_message_t *message)
+{
+    return s_autopilot_sysid != 0 && message->sysid == s_autopilot_sysid &&
+           message->compid == MAV_COMP_ID_AUTOPILOT1;
+}
+
 static void copy_mavlink_text(char *dst, size_t dst_len, const void *src, size_t src_len)
 {
     size_t len = strnlen((const char *)src, src_len);
@@ -75,28 +119,30 @@ static void submit_heartbeat(const mavlink_message_t *message)
     mavlink_heartbeat_t msg = {0};
     mavlink_msg_heartbeat_decode(message, &msg);
 
-    // Only track arm state from autopilots; ignore GCS, cameras, and other components.
-    if (msg.autopilot == MAV_AUTOPILOT_INVALID) {
+    // Only the flight controller itself: GCS, cameras, other components and
+    // Remote ID modules report MAV_AUTOPILOT_INVALID or another component ID.
+    if (msg.autopilot == MAV_AUTOPILOT_INVALID || message->compid != MAV_COMP_ID_AUTOPILOT1) {
         return;
     }
-
-    // Filter by configured source system ID if set (HEARTBEAT has no target fields;
-    // match against the sender's system ID in the MAVLink header instead).
     if (CONFIG_REMOTEID_MAVLINK_TARGET_SYSTEM != 0 &&
         message->sysid != CONFIG_REMOTEID_MAVLINK_TARGET_SYSTEM) {
         return;
     }
+    if (s_autopilot_sysid == 0) {
+        s_autopilot_sysid = message->sysid;
+        ESP_LOGI(TAG, "bound to autopilot system %u", message->sysid);
+    } else if (message->sysid != s_autopilot_sysid) {
+        ESP_LOGD(TAG, "ignored HEARTBEAT from autopilot system %u (bound to %u)",
+                 message->sysid, s_autopilot_sysid);
+        return;
+    }
 
-#if REMOTEID_MAVLINK_OUTPUT
-    // Adopt the flight controller's system ID so our outgoing messages appear as
-    // a component of the same vehicle.
-    s_autopilot_sysid = message->sysid;
-#endif
-
-    static bool s_was_armed = false;
+    // Unknown (-1) until the first HEARTBEAT, so a module that reboots while the
+    // vehicle is armed does not take its in-flight position as the takeoff point.
+    static int s_was_armed = -1;
     bool is_armed = (msg.base_mode & MAV_MODE_FLAG_SAFETY_ARMED) != 0;
 
-    if (is_armed && !s_was_armed) {
+    if (is_armed && s_was_armed == 0) {
         remoteid_store_update_t update = {.type = REMOTEID_STORE_UPDATE_TAKEOFF};
         if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
             ESP_LOGI(TAG, "vehicle armed, capturing takeoff position");
@@ -136,8 +182,7 @@ static void submit_basic_id(const mavlink_message_t *message)
     mavlink_open_drone_id_basic_id_t msg = { 0 };
     mavlink_msg_open_drone_id_basic_id_decode(message, &msg);
 
-    if (!target_matches(msg.target_system, msg.target_component)) {
-        ESP_LOGD(TAG, "ignored Basic ID for target system=%u component=%u", msg.target_system, msg.target_component);
+    if (!accept_odid(message, msg.target_system, msg.target_component, msg.id_or_mac, "Basic ID")) {
         return;
     }
 
@@ -146,8 +191,8 @@ static void submit_basic_id(const mavlink_message_t *message)
         .data.basic_id.id_type = (ODID_idtype_t)msg.id_type,
         .data.basic_id.ua_type = (ODID_uatype_t)msg.ua_type,
     };
-    copy_mavlink_text(update.data.basic_id.uas_id, sizeof(update.data.basic_id.uas_id),
-                      msg.uas_id, sizeof(msg.uas_id));
+    // Raw copy: UUID and session IDs are binary; the store validates per ID type.
+    memcpy(update.data.basic_id.uas_id, msg.uas_id, ODID_ID_SIZE);
 
     if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
         ESP_LOGI(TAG, "accepted MAVLink Basic ID");
@@ -161,8 +206,7 @@ static void submit_operator_id(const mavlink_message_t *message)
     mavlink_open_drone_id_operator_id_t msg = { 0 };
     mavlink_msg_open_drone_id_operator_id_decode(message, &msg);
 
-    if (!target_matches(msg.target_system, msg.target_component)) {
-        ESP_LOGD(TAG, "ignored Operator ID for target system=%u component=%u", msg.target_system, msg.target_component);
+    if (!accept_odid(message, msg.target_system, msg.target_component, msg.id_or_mac, "Operator ID")) {
         return;
     }
 
@@ -184,8 +228,7 @@ static void submit_location(const mavlink_message_t *message)
     mavlink_open_drone_id_location_t msg = { 0 };
     mavlink_msg_open_drone_id_location_decode(message, &msg);
 
-    if (!target_matches(msg.target_system, msg.target_component)) {
-        ESP_LOGD(TAG, "ignored Location for target system=%u component=%u", msg.target_system, msg.target_component);
+    if (!accept_odid(message, msg.target_system, msg.target_component, msg.id_or_mac, "Location")) {
         return;
     }
 
@@ -231,8 +274,7 @@ static void submit_system(const mavlink_message_t *message)
     mavlink_open_drone_id_system_t msg = { 0 };
     mavlink_msg_open_drone_id_system_decode(message, &msg);
 
-    if (!target_matches(msg.target_system, msg.target_component)) {
-        ESP_LOGD(TAG, "ignored System for target system=%u component=%u", msg.target_system, msg.target_component);
+    if (!accept_odid(message, msg.target_system, msg.target_component, msg.id_or_mac, "System")) {
         return;
     }
 
@@ -252,6 +294,7 @@ static void submit_system(const mavlink_message_t *message)
         .data.system.classification_type    = (ODID_classification_type_t)msg.classification_type,
         .data.system.eu_category            = (ODID_category_EU_t)msg.category_eu,
         .data.system.eu_class               = (ODID_class_EU_t)msg.class_eu,
+        .data.system.timestamp              = msg.timestamp,
     };
 
     if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) == ESP_OK) {
@@ -266,8 +309,7 @@ static void submit_system_update(const mavlink_message_t *message)
     mavlink_open_drone_id_system_update_t msg = { 0 };
     mavlink_msg_open_drone_id_system_update_decode(message, &msg);
 
-    if (!target_matches(msg.target_system, msg.target_component)) {
-        ESP_LOGD(TAG, "ignored System Update for target system=%u component=%u", msg.target_system, msg.target_component);
+    if (!accept_odid(message, msg.target_system, msg.target_component, NULL, "System Update")) {
         return;
     }
 
@@ -276,7 +318,8 @@ static void submit_system_update(const mavlink_message_t *message)
         .data.system_update.has_operator_position    = msg.operator_latitude != 0 || msg.operator_longitude != 0,
         .data.system_update.operator_latitude        = (double)msg.operator_latitude  / 10000000.0,
         .data.system_update.operator_longitude       = (double)msg.operator_longitude / 10000000.0,
-        .data.system_update.operator_altitude_geo_m  = msg.operator_altitude_geo,
+        .data.system_update.operator_altitude_geo_m  = msg.operator_altitude_geo <= (float)INV_ALT ? (float)INV_ALT : msg.operator_altitude_geo,
+        .data.system_update.timestamp                = msg.timestamp,
     };
 
     if (remoteid_store_submit(&update, pdMS_TO_TICKS(100)) != ESP_OK) {
@@ -289,8 +332,7 @@ static void submit_self_id(const mavlink_message_t *message)
     mavlink_open_drone_id_self_id_t msg = { 0 };
     mavlink_msg_open_drone_id_self_id_decode(message, &msg);
 
-    if (!target_matches(msg.target_system, msg.target_component)) {
-        ESP_LOGD(TAG, "ignored Self ID for target system=%u component=%u", msg.target_system, msg.target_component);
+    if (!accept_odid(message, msg.target_system, msg.target_component, msg.id_or_mac, "Self ID")) {
         return;
     }
 
@@ -313,8 +355,7 @@ static void submit_authentication(const mavlink_message_t *message)
     mavlink_open_drone_id_authentication_t msg = { 0 };
     mavlink_msg_open_drone_id_authentication_decode(message, &msg);
 
-    if (!target_matches(msg.target_system, msg.target_component)) {
-        ESP_LOGD(TAG, "ignored Authentication for target system=%u component=%u", msg.target_system, msg.target_component);
+    if (!accept_odid(message, msg.target_system, msg.target_component, msg.id_or_mac, "Authentication")) {
         return;
     }
 
@@ -365,8 +406,7 @@ static void apply_odid_encoded_message(const uint8_t raw[ODID_MESSAGE_SIZE])
         update.type = REMOTEID_STORE_UPDATE_BASIC_ID;
         update.data.basic_id.id_type = data.IDType;
         update.data.basic_id.ua_type = data.UAType;
-        copy_mavlink_text(update.data.basic_id.uas_id, sizeof(update.data.basic_id.uas_id),
-                          data.UASID, sizeof(data.UASID));
+        memcpy(update.data.basic_id.uas_id, data.UASID, ODID_ID_SIZE);
         break;
     }
     case ODID_MESSAGETYPE_LOCATION: {
@@ -416,6 +456,7 @@ static void apply_odid_encoded_message(const uint8_t raw[ODID_MESSAGE_SIZE])
         update.data.system.classification_type     = data.ClassificationType;
         update.data.system.eu_category             = data.CategoryEU;
         update.data.system.eu_class                = data.ClassEU;
+        update.data.system.timestamp               = data.Timestamp;
         break;
     }
     case ODID_MESSAGETYPE_OPERATOR_ID: {
@@ -468,9 +509,7 @@ static void handle_message_pack(const mavlink_message_t *message)
     mavlink_open_drone_id_message_pack_t pack = { 0 };
     mavlink_msg_open_drone_id_message_pack_decode(message, &pack);
 
-    if (!target_matches(pack.target_system, pack.target_component)) {
-        ESP_LOGD(TAG, "ignored Message Pack for target system=%u component=%u",
-                 pack.target_system, pack.target_component);
+    if (!accept_odid(message, pack.target_system, pack.target_component, pack.id_or_mac, "Message Pack")) {
         return;
     }
 
@@ -492,14 +531,17 @@ static void handle_message_pack(const mavlink_message_t *message)
     }
 }
 
-// Seed the shared UTC clock from the flight controller's SYSTEM_TIME so every
-// OpenDroneID timestamp reflects real time. Available whenever MAVLink input is
-// enabled, independent of the operator-location loop.
+// Seed the shared UTC clock from the bound autopilot's SYSTEM_TIME so every
+// OpenDroneID timestamp reflects real time. A GCS or companion also sends
+// SYSTEM_TIME, from a clock that may be wrong, so only the autopilot counts.
 static void capture_system_time(const mavlink_message_t *message)
 {
+    if (!from_bound_autopilot(message)) {
+        return;
+    }
     mavlink_system_time_t msg = { 0 };
     mavlink_msg_system_time_decode(message, &msg);
-    remoteid_clock_set_utc(msg.time_unix_usec / 1000000ULL);
+    remoteid_clock_set_utc_us(msg.time_unix_usec);
 }
 
 static void handle_message(const mavlink_message_t *message)
@@ -553,7 +595,7 @@ static void handle_message(const mavlink_message_t *message)
 static esp_err_t mavlink_transport_init(void)
 {
     usb_serial_jtag_driver_config_t cfg = {
-        .rx_buffer_size = REMOTEID_MAVLINK_BUF_SIZE * 2,
+        .rx_buffer_size = REMOTEID_MAVLINK_RING_SIZE,
         .tx_buffer_size = REMOTEID_MAVLINK_BUF_SIZE * 2,
     };
     return usb_serial_jtag_driver_install(&cfg);
@@ -590,7 +632,7 @@ static esp_err_t mavlink_transport_init(void)
     };
     int tx_pin = CONFIG_REMOTEID_MAVLINK_TX_GPIO >= 0 ? CONFIG_REMOTEID_MAVLINK_TX_GPIO : UART_PIN_NO_CHANGE;
 
-    ESP_RETURN_ON_ERROR(uart_driver_install(CONFIG_REMOTEID_MAVLINK_UART_NUM, REMOTEID_MAVLINK_BUF_SIZE * 2,
+    ESP_RETURN_ON_ERROR(uart_driver_install(CONFIG_REMOTEID_MAVLINK_UART_NUM, REMOTEID_MAVLINK_RING_SIZE,
                                             0, REMOTEID_MAVLINK_QUEUE_SIZE, NULL, 0),
                         TAG, "install MAVLink UART driver");
     ESP_RETURN_ON_ERROR(uart_param_config(CONFIG_REMOTEID_MAVLINK_UART_NUM, &uart_config),
@@ -657,6 +699,8 @@ static void remoteid_mavlink_status_task(void *arg)
         case REMOTEID_HEALTH_INVALID_SERIAL:      fail = "Invalid UAS serial (CTA-2063-A)"; break;
         case REMOTEID_HEALTH_WAITING_OPERATOR_ID: fail = "Operator ID not set"; break;
         case REMOTEID_HEALTH_WAITING_BASIC_ID:    fail = "UAS ID not set"; break;
+        case REMOTEID_HEALTH_TRANSPORTS_NOT_RUNNING: fail = "Remote ID transmitters not running"; break;
+        case REMOTEID_HEALTH_LOCATION_STALE:      fail = "No fresh aircraft location"; break;
         default:                                  fail = "Remote ID not ready"; break;
         }
         mavlink_message_t msg;
@@ -724,8 +768,8 @@ static void remoteid_mavlink_operator_location_task(void *arg)
                 }
             } else if (remoteid_clock_is_synced()) {
                 // Fixed/takeoff location: keep it fresh toward the autopilot.
-                int32_t lat = (int32_t)(snap.operator_latitude  * 1e7);
-                int32_t lon = (int32_t)(snap.operator_longitude * 1e7);
+                int32_t lat = (int32_t)lround(snap.operator_latitude  * 1e7);
+                int32_t lon = (int32_t)lround(snap.operator_longitude * 1e7);
                 mavlink_message_t msg;
                 mavlink_msg_open_drone_id_system_update_pack_chan(
                     outgoing_system_id(), compid, MAVLINK_COMM_1, &msg,
@@ -753,7 +797,7 @@ static void remoteid_mavlink_task(void *arg)
     memset(&status, 0, sizeof(status));
 
     while (true) {
-        int len = mavlink_transport_read(buf, sizeof(buf), pdMS_TO_TICKS(1000));
+        int len = mavlink_transport_read(buf, sizeof(buf), pdMS_TO_TICKS(REMOTEID_MAVLINK_READ_TIMEOUT_MS));
         for (int i = 0; i < len; i++) {
             if (mavlink_parse_char(MAVLINK_COMM_0, buf[i], &message, &status)) {
                 handle_message(&message);

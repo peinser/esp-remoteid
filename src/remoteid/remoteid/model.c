@@ -110,7 +110,8 @@ esp_err_t remoteid_model_init(remoteid_state_t *state)
     state->latitude              = REMOTEID_TAKEOFF_LATITUDE;
     state->longitude             = REMOTEID_TAKEOFF_LONGITUDE;
     state->altitude_geo_m        = REMOTEID_TAKEOFF_ALTITUDE_M;
-    state->altitude_baro_m       = REMOTEID_TAKEOFF_ALTITUDE_M;
+    // The configured altitude is WGS-84 (geodetic); there is no pressure altitude.
+    state->altitude_baro_m       = (float)INV_ALT;
     state->status                = ODID_STATUS_AIRBORNE;
     state->has_operator_position = true;
     state->operator_latitude     = REMOTEID_TAKEOFF_LATITUDE;

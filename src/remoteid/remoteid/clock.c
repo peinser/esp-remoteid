@@ -1,50 +1,57 @@
 #include "clock.h"
 
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
 
-// The ODID-2019 second that corresponded to esp_timer t=0. A single 32-bit word
-// so reads/writes stay atomic across the RX task (writer) and the broadcast /
-// operator-location tasks (readers); a torn read is impossible on a 32-bit load.
-static volatile uint32_t s_epoch2019_at_boot;
-static volatile bool     s_synced;
+// Unix microseconds that corresponded to esp_timer t=0. Written by the MAVLink
+// RX task and read by the broadcast tasks, so the 64-bit value is guarded.
+static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
+static int64_t s_unix_us_at_boot;
+static bool s_synced;
 
-static uint32_t uptime_seconds(void)
+void remoteid_clock_set_utc_us(uint64_t unix_us)
 {
-    return (uint32_t)(esp_timer_get_time() / 1000000LL);
-}
-
-void remoteid_clock_set_utc(uint64_t unix_seconds)
-{
-    if (unix_seconds <= REMOTEID_ODID_EPOCH_2019) {
+    if (unix_us <= REMOTEID_ODID_EPOCH_2019 * 1000000ULL) {
         return; // no real wall clock yet
     }
-    s_epoch2019_at_boot = (uint32_t)(unix_seconds - REMOTEID_ODID_EPOCH_2019) - uptime_seconds();
+    int64_t offset = (int64_t)unix_us - esp_timer_get_time();
+    portENTER_CRITICAL(&s_lock);
+    s_unix_us_at_boot = offset;
     s_synced = true;
+    portEXIT_CRITICAL(&s_lock);
+}
+
+static bool unix_us_now(int64_t *out)
+{
+    portENTER_CRITICAL(&s_lock);
+    bool synced = s_synced;
+    int64_t offset = s_unix_us_at_boot;
+    portEXIT_CRITICAL(&s_lock);
+
+    *out = offset + esp_timer_get_time();
+    return synced;
 }
 
 bool remoteid_clock_is_synced(void)
 {
-    return s_synced;
+    int64_t unused;
+    return unix_us_now(&unused);
 }
 
 uint32_t remoteid_clock_odid_2019(void)
 {
-    if (!s_synced) {
-        return uptime_seconds(); // monotonic fallback
-    }
-    return s_epoch2019_at_boot + uptime_seconds();
-}
-
-uint64_t remoteid_clock_unix(void)
-{
-    if (!s_synced) {
+    int64_t unix_us;
+    if (!unix_us_now(&unix_us)) {
         return 0;
     }
-    return REMOTEID_ODID_EPOCH_2019 + (uint64_t)remoteid_clock_odid_2019();
+    return (uint32_t)(unix_us / 1000000 - (int64_t)REMOTEID_ODID_EPOCH_2019);
 }
 
 float remoteid_clock_seconds_after_hour(void)
 {
-    // The 2019 epoch is hour-aligned, so (unix % 3600) == (odid_2019 % 3600).
-    return (float)(remoteid_clock_odid_2019() % 3600);
+    int64_t unix_us;
+    if (!unix_us_now(&unix_us)) {
+        return -1.0f;
+    }
+    return (float)((unix_us / 1000) % 3600000) / 1000.0f;
 }

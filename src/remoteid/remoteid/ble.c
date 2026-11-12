@@ -17,6 +17,7 @@
 #include "opendroneid.h"
 #include "os/os_mbuf.h"
 #include "sdkconfig.h"
+#include "selftest.h"
 #include "store.h"
 
 #define REMOTEID_SERVICE_DATA_LEN    (2 + ODID_MESSAGE_SIZE)
@@ -30,12 +31,29 @@
 #define CONFIG_REMOTEID_BLE_TX_INTERVAL_MS 250
 #endif
 
+// Consecutive failed advertisement updates before the transport is reported as
+// failed. One failure can be a transient mbuf shortage; a run of them is not.
+#define REMOTEID_BLE_TX_FAILURE_LIMIT 8
+
+// Both transports use the extended advertising API, one instance each.
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+#error "Remote ID BLE needs CONFIG_BT_NIMBLE_EXT_ADV=y (see sdkconfig.defaults)"
+#endif
+#if CONFIG_REMOTEID_TRANSPORT_BLE && CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE && \
+    CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES < 2
+#error "BLE4 legacy + BLE5 Long Range need CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES >= 2"
+#endif
+
 static const char *TAG = "remoteid_ble";
 
 // Auth pages are broadcast when either local Ed25519 signing or input-link
 // (MAVLink) authentication can supply them. The schedule reserves one slot per
 // ODID auth page; slots beyond the number of populated pages are skipped at
 // runtime without consuming an advertising interval (see the transport task).
+//
+// Rates with the default 250 ms interval: Location every 500 ms, every other
+// message once per 2.5 s cycle, plus up to 4 x 100 ms of auth pages (2.9 s).
+// The Kconfig interval range keeps Location within 1 s and the rest within 3 s.
 #if CONFIG_REMOTEID_AUTH_ED25519 || CONFIG_REMOTEID_MAVLINK_INPUT
 #define REMOTEID_BLE_AUTH_PAGES 1
 #else
@@ -134,7 +152,20 @@ typedef struct {
     // Last auth page index populated this cycle (0-based), or -1 if none are
     // available. Set when the page-0 slot is reached and read for pages 1..N.
     int                       auth_last_page;
+    uint8_t                   tx_failures;
 } ble_transport_ctx_t;
+
+// Count consecutive failures; a run of them latches a Remote ID system failure.
+static void record_tx_result(ble_transport_ctx_t *ctx, bool ok)
+{
+    if (ok) {
+        ctx->tx_failures = 0;
+        return;
+    }
+    if (++ctx->tx_failures == REMOTEID_BLE_TX_FAILURE_LIMIT) {
+        remoteid_selftest_report(ctx->label, false);
+    }
+}
 
 static esp_err_t advertise_ble(ble_transport_ctx_t *ctx, const uint8_t message[ODID_MESSAGE_SIZE])
 {
@@ -184,65 +215,67 @@ static void remoteid_ble_transport_task(void *arg)
     ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
     ESP_LOGI(TAG, "%s transport ready, starting advertisements", ctx->label);
 
+    // Fixed cadence: the slot period does not stretch by the encode/sign time.
+    TickType_t last_wake = xTaskGetTickCount();
+
     while (true) {
         if (!remoteid_store_is_ready()) {
             ble_gap_ext_adv_stop(ctx->instance);
             ctx->started = false;
             ESP_LOGW(TAG, "%s transport paused until Remote ID identity is ready", ctx->label);
             ESP_ERROR_CHECK(remoteid_store_wait_ready(portMAX_DELAY));
-        }
-
-        ESP_ERROR_CHECK(remoteid_store_get_snapshot(&snapshot));
-        if (remoteid_encode_static_messages(&snapshot, &ctx->bundle) != ESP_OK) {
-            ESP_LOGE(TAG, "%s failed to encode static messages", ctx->label);
-            vTaskDelay(pdMS_TO_TICKS(CONFIG_REMOTEID_BLE_TX_INTERVAL_MS));
-            continue;
+            last_wake = xTaskGetTickCount();
         }
 
         uint8_t schedule_entry = s_message_schedule[ctx->schedule_index];
+        ctx->schedule_index = (ctx->schedule_index + 1) % SCHEDULE_LEN;
         bool is_auth_page = (schedule_entry >= REMOTEID_MESSAGE_COUNT);
-        bool skipped = false;
+        int page = schedule_entry - REMOTEID_MESSAGE_COUNT;
 
-        if (is_auth_page) {
-            int page = schedule_entry - REMOTEID_MESSAGE_COUNT;
+        // Pages beyond the populated ones take no advertising interval.
+        if (is_auth_page && page > 0 && page > ctx->auth_last_page) {
+            continue;
+        }
+
+        ESP_ERROR_CHECK(remoteid_store_get_snapshot(&snapshot));
+        const uint8_t *message = NULL;
+
+        if (remoteid_encode_static_messages(&snapshot, &ctx->bundle) != ESP_OK) {
+            ESP_LOGE(TAG, "%s failed to encode static messages", ctx->label);
+        } else if (is_auth_page) {
             if (page == 0) {
                 // Authentication received over the input link supersedes locally
-                // generated signatures. Either way the bundle is filled as-is from
-                // the bytes last broadcast for each message type; re-encoding here
-                // would diverge (the System timestamp advances every second),
-                // causing receivers to fail verification.
+                // generated signatures. Either way the signed set is the bytes last
+                // broadcast for each message type; re-encoding Location/System here
+                // would diverge (their timestamps advance), failing verification.
                 int last_page = remoteid_auth_apply_external_bundle(&ctx->bundle, &snapshot);
                 if (last_page < 0) {
                     last_page = remoteid_auth_sign_bundle(&ctx->bundle);
                 }
                 ctx->auth_last_page = last_page;
             }
-            if (page <= ctx->auth_last_page) {
-                if (advertise_ble(ctx, ctx->bundle.auth_pages[page]) == ESP_OK) {
-                    ESP_LOGD(TAG, "%s advertising ODID auth page %d", ctx->label, page);
-                }
-            } else {
-                // No data for this page; advance to the next schedule slot
-                // immediately rather than holding an empty advertising interval.
-                skipped = true;
+            if (page > ctx->auth_last_page) {
+                continue; // no signature available this cycle
             }
+            message = ctx->bundle.auth_pages[page];
         } else {
             remoteid_message_index_t idx = (remoteid_message_index_t)schedule_entry;
-            if (remoteid_encode_dynamic_message(&snapshot, &ctx->bundle, idx) != ESP_OK) {
-                ESP_LOGE(TAG, "%s failed to encode dynamic message %u, broadcasting stale", ctx->label, idx);
-            }
-            if (advertise_ble(ctx, ctx->bundle.messages[idx]) == ESP_OK) {
-                ESP_LOGD(TAG, "%s advertising ODID message type %u", ctx->label,
-                         ctx->bundle.messages[idx][0] >> 4);
+            // A failed encode is not hidden behind the previous, now stale, payload.
+            if (remoteid_encode_dynamic_message(&snapshot, &ctx->bundle, idx) == ESP_OK) {
+                message = ctx->bundle.messages[idx];
+            } else {
+                ESP_LOGE(TAG, "%s failed to encode message %u", ctx->label, idx);
             }
         }
 
-        ctx->schedule_index = (ctx->schedule_index + 1) % SCHEDULE_LEN;
-        if (skipped) {
-            continue;
+        bool ok = message && advertise_ble(ctx, message) == ESP_OK;
+        record_tx_result(ctx, ok);
+        if (ok) {
+            ESP_LOGD(TAG, "%s advertising ODID message type %u", ctx->label, message[0] >> 4);
         }
-        vTaskDelay(pdMS_TO_TICKS(is_auth_page ? REMOTEID_BLE_AUTH_PAGE_INTERVAL_MS
-                                              : CONFIG_REMOTEID_BLE_TX_INTERVAL_MS));
+
+        xTaskDelayUntil(&last_wake, pdMS_TO_TICKS(is_auth_page ? REMOTEID_BLE_AUTH_PAGE_INTERVAL_MS
+                                                               : CONFIG_REMOTEID_BLE_TX_INTERVAL_MS));
     }
 }
 
@@ -279,7 +312,13 @@ static esp_err_t configure_ble4_legacy(void)
         ESP_LOGE(TAG, "failed to configure BLE4 legacy ext adv instance: %d", rc);
         return ESP_FAIL;
     }
+    s_ble4_ctx.started = false; // a host reset stops advertising; the task restarts it
 
+    static bool task_created;
+    if (task_created) {
+        return ESP_OK;
+    }
+    task_created = true;
     if (xTaskCreate(remoteid_ble_transport_task, "remoteid_ble4", 6144, &s_ble4_ctx, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create BLE4 legacy task");
         return ESP_ERR_NO_MEM;
@@ -323,7 +362,13 @@ static esp_err_t configure_ble5_lr(void)
         ESP_LOGE(TAG, "failed to configure BLE5 Long Range ext adv instance: %d", rc);
         return ESP_FAIL;
     }
+    s_ble5_ctx.started = false; // a host reset stops advertising; the task restarts it
 
+    static bool task_created;
+    if (task_created) {
+        return ESP_OK;
+    }
+    task_created = true;
     if (xTaskCreate(remoteid_ble_transport_task, "remoteid_ble5", 6144, &s_ble5_ctx, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create BLE5 Long Range task");
         return ESP_ERR_NO_MEM;
@@ -337,17 +382,27 @@ static esp_err_t configure_ble5_lr(void)
 
 // ---- NimBLE host -----------------------------------------------------------
 
+// NimBLE calls this at start-up and again after every host reset. The random
+// address is generated once so receivers keep associating the advertisements
+// with the same aircraft for the whole flight.
 static void ble_on_sync(void)
 {
-    ble_addr_t rnd_addr;
-    int rc = ble_hs_id_gen_rnd(1, &rnd_addr);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "failed to generate random BLE address: %d", rc);
-        return;
+    static ble_addr_t rnd_addr;
+    static bool have_addr;
+
+    if (!have_addr) {
+        int rc = ble_hs_id_gen_rnd(1, &rnd_addr);
+        if (rc != 0) {
+            ESP_LOGE(TAG, "failed to generate random BLE address: %d", rc);
+            remoteid_selftest_report("BLE", false);
+            return;
+        }
+        have_addr = true;
     }
-    rc = ble_hs_id_set_rnd(rnd_addr.val);
+    int rc = ble_hs_id_set_rnd(rnd_addr.val);
     if (rc != 0) {
         ESP_LOGE(TAG, "failed to set random BLE address: %d", rc);
+        remoteid_selftest_report("BLE", false);
         return;
     }
 
@@ -355,15 +410,20 @@ static void ble_on_sync(void)
 
 #if CONFIG_REMOTEID_TRANSPORT_BLE
     if (configure_ble4_legacy() != ESP_OK) {
-        ESP_LOGE(TAG, "BLE4 legacy setup failed");
+        remoteid_selftest_report("BLE4", false);
     }
 #endif
 
 #if CONFIG_REMOTEID_TRANSPORT_BLE5_LONG_RANGE
     if (configure_ble5_lr() != ESP_OK) {
-        ESP_LOGE(TAG, "BLE5 Long Range setup failed");
+        remoteid_selftest_report("BLE5", false);
     }
 #endif
+}
+
+static void ble_on_reset(int reason)
+{
+    ESP_LOGW(TAG, "BLE host reset (reason %d), advertising resumes on resync", reason);
 }
 
 static void nimble_host_task(void *param)
@@ -378,7 +438,8 @@ esp_err_t remoteid_ble_start(void)
     ESP_RETURN_ON_ERROR(nimble_port_init(), TAG, "initialize NimBLE");
     ESP_RETURN_ON_ERROR(configure_ble_tx_power(), TAG, "configure BLE TX power");
 
-    ble_hs_cfg.sync_cb = ble_on_sync;
+    ble_hs_cfg.sync_cb  = ble_on_sync;
+    ble_hs_cfg.reset_cb = ble_on_reset;
     nimble_port_freertos_init(nimble_host_task);
 
     return ESP_OK;

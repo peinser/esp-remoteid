@@ -89,7 +89,7 @@ This is protocol-compliant. The broadcast system is active and all four message 
 
 **Known takeoff position (`Broadcast a known takeoff position` = enabled)**
 
-Enable this option and enter the takeoff coordinates. The firmware latches these values at compile time and broadcasts them as the UA and operator position (EU regulation permits using the takeoff location as the operator location for add-on modules).
+Enable this option and enter the takeoff coordinates. The firmware latches these values at compile time and broadcasts them as the UA and operator position (EU regulation permits using the takeoff location as the operator location for add-on modules). The configured altitude is geodetic (WGS-84), so the barometric altitude is broadcast as unknown. A fixed UA position does not follow the aircraft in flight; use it for bench testing, not as a substitute for live position input.
 
 | Option | Format | Example |
 |--------|--------|---------|
@@ -109,14 +109,14 @@ BLE 4 legacy is enabled by default. All other transports are disabled by default
 |--------|---------|-------------|
 | `Enable Bluetooth LE legacy advertisements` | Enabled | Broadcasts OpenDroneID messages using BLE 4 legacy advertising on service UUID `0xFFFA`. Supported by all current receiver apps. |
 | `Enable Bluetooth 5 Long Range (LE Coded PHY)` | Disabled | Broadcasts OpenDroneID messages using BLE 5 extended advertising with LE Coded PHY (S=8). Increases range significantly at the cost of a lower air data rate. Can run alongside BLE 4 legacy. Disabled by default: not an approved transport under EU 2019/945. Valid under ASTM F3411-22a (FAA). Most current receiver apps do not yet support BLE 5. |
-| `BLE advertisement rotation interval` | `250 ms` | BLE payload rotation cadence for both BLE transports. Default keeps Location refreshed around 1 Hz while also rotating Basic ID, System, and Operator ID. |
+| `BLE advertisement rotation interval` | `250 ms` | BLE payload rotation cadence for both BLE transports (100 to 260 ms). Location is sent every other slot (every 500 ms at the default); Basic ID, System, Operator ID and Self ID once per 10-slot cycle. The 260 ms maximum keeps Location within 1 s and every other message within 3 s, including the authentication pages. |
 | `Enable Wi-Fi Beacon advertisements` | Disabled | Broadcasts OpenDroneID Message Pack payloads in Wi-Fi Beacon vendor IEs. |
 | `Enable Wi-Fi NAN advertisements` | Disabled | Broadcasts OpenDroneID Message Pack payloads in Wi-Fi NAN sync/action frames. |
 | `Wi-Fi Remote ID channel` | `6` | 2.4 GHz channel used by the ESP32-S3 Wi-Fi transport. |
 | `Wi-Fi TX power` | `20 dBm` | Converted internally to ESP-IDF quarter-dBm units. |
 | `Wi-Fi Beacon SSID` | `OpenDroneID` | SSID embedded only in Beacon frames. Receivers should parse the vendor IE, not rely on this SSID. |
-| `Wi-Fi Beacon TX interval` | `1000 ms` | Wi-Fi Beacon transmission cadence. |
-| `Wi-Fi NAN TX interval` | `1000 ms` | Wi-Fi NAN sync/action transmission cadence. |
+| `Wi-Fi Beacon TX interval` | `1000 ms` | Wi-Fi Beacon transmission cadence (100 to 1000 ms, fixed rate). Every frame carries the full message pack. |
+| `Wi-Fi NAN TX interval` | `1000 ms` | Wi-Fi NAN sync/action transmission cadence (100 to 1000 ms, fixed rate). |
 | `Enable onboard RGB status indicator` | Disabled | Drives a board-mounted addressable RGB LED as a local status indicator. |
 | `Onboard RGB LED data GPIO` | `48` | Physical ESP32-S3 GPIO connected to the onboard WS2812/SK6812-style RGB LED data input. The UICPAL ESP32-S3-N16R8 board variant used by this firmware uses GPIO48; other variants may use GPIO33 or another pin. |
 | `Onboard RGB LED brightness` | `16%` | Scales the local indicator LED brightness. |
@@ -136,7 +136,7 @@ Status behavior:
 | Operational | Configured green flash pattern |
 | Error state | Red fast blink |
 
-Operational means the firmware has started its enabled transports and the state store has a valid Basic ID/UAS ID plus Operator ID. This prevents the indicator from showing the operational pattern while placeholder identity values are still blocking broadcasts.
+Operational means the same as `GOOD_TO_ARM`: a valid Basic ID/UAS ID and Operator ID, all enabled transports running without a reported fault and, when the position comes from MAVLink or DroneCAN, a Location received within the last 3 s. Anything else shows the waiting pattern; a latched Remote ID system failure shows the error pattern.
 
 The RGB data pin is not a suitable transistor trigger for external lights because addressable LEDs use a high-speed encoded data waveform. Use the external GPIO lighting outputs for that purpose.
 
@@ -189,7 +189,15 @@ MAVLink input is available but disabled by default. When enabled, the firmware l
 - `OPEN_DRONE_ID_AUTHENTICATION`
 - `OPEN_DRONE_ID_MESSAGE_PACK`
 
-It also watches `HEARTBEAT` to capture the takeoff position when an autopilot first arms.
+It also watches `HEARTBEAT` and `SYSTEM_TIME` from the autopilot. The module binds to the first `HEARTBEAT` from an autopilot component (`MAV_COMP_ID_AUTOPILOT1`) of the configured target system, or of any system when none is configured, and never re-binds. Arm state (takeoff capture, emergency status) and the UTC clock are taken only from that autopilot; a GCS or companion `SYSTEM_TIME` is ignored. The arm state is unknown until the first `HEARTBEAT`, so a module that reboots while the vehicle is armed does not capture its in-flight position as the takeoff point.
+
+Only data about this aircraft is accepted. A message with a non-zero `id_or_mac`, or one sent by an Open Drone ID transmitter/receiver component (`236`-`238`), describes another aircraft seen by a Remote ID receiver and is ignored, including inside `OPEN_DRONE_ID_MESSAGE_PACK`. A `0/0` target alone does not make a message about this aircraft.
+
+Every input path (MAVLink messages, message packs, DroneCAN, Kconfig) goes through the same validation before it changes the broadcast state:
+
+- The UAS ID must match its ID type. Serial number and CAA registration IDs are printable ASCII; UTM UUIDs and specific session IDs are binary and stored byte for byte, including NUL bytes. ID type `None`, reserved types and empty IDs are rejected and never replace a valid identity.
+- A full EU operator registration number entered with its secret part (`FIN87astrdge12k8-xyz`) is checksum-verified (Luhn mod 36), and only the 16 public characters are stored and broadcast. A wrong secret part is rejected.
+- An update that the OpenDroneID encoder cannot represent (out-of-range enum, coordinate, speed or authentication page) is rejected as a whole instead of stopping the broadcast.
 
 `OPEN_DRONE_ID_MESSAGE_PACK` is unpacked and each contained OpenDroneID message is applied as if it had arrived on its own, so a flight controller can deliver the full set in a single frame. Authentication pages received over the link are reassembled and broadcast verbatim, superseding any locally generated Ed25519 signature. Both transports carry all authentication pages; the BLE advertising schedule reserves a slot per page and skips any that are unpopulated without holding an empty advertising interval.
 
@@ -238,7 +246,7 @@ Either way, this module consumes the standard messages once they are flowing; no
 When `Send HEARTBEAT and OPEN_DRONE_ID_ARM_STATUS` is enabled, the module periodically transmits two messages back to the flight controller (this requires bidirectional UART wiring, i.e. the TX GPIO connected to the flight controller's RX):
 
 - `HEARTBEAT` with component type `MAV_TYPE_ODID`, so the flight controller and ground station see the Remote ID module as a live component of the vehicle.
-- `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` once a usable identity is present and broadcasts have started, or `PRE_ARM_FAIL_GENERIC` with an error string otherwise.
+- `OPEN_DRONE_ID_ARM_STATUS`, reporting `GOOD_TO_ARM` only when a usable identity is present, all enabled transports are running without a reported fault and (for a MAVLink/DroneCAN position source) a Location arrived within the last 3 s. Otherwise `PRE_ARM_FAIL_GENERIC` with the reason (for example "No fresh aircraft location" or "Remote ID transmitters not running").
 
 This is what lets ArduPilot treat the module as present and healthy. With the relevant `DID_OPTIONS` bit set, ArduPilot refuses to arm until it receives `GOOD_TO_ARM`, so the drone cannot take off without a working Remote ID broadcast. The module shares the flight controller's system ID (adopted automatically by default) and uses an Open Drone ID component ID, so the status appears as part of the same vehicle.
 
@@ -251,11 +259,13 @@ The mode is derived from the `operator_location_type` carried in the last full `
 | Operator-location type | Firmware behaviour |
 |------------------------|--------------------|
 | `FIXED` / `TAKEOFF` | The firmware **republishes** `OPEN_DRONE_ID_SYSTEM_UPDATE` (broadcast `target=0/0`) at the configured period (0.5 Hz default), with the fixed position and a fresh timestamp, so the autopilot stays compliant even after the GCS disconnects. |
-| `LIVE_GNSS` | The firmware **only consumes** the GCS's live `SYSTEM_UPDATE` stream and **never republishes** it (re-stamping a moving position would falsify freshness). If updates stop for longer than the expiry window, the operator location is dropped as stale. |
+| `LIVE_GNSS` | The firmware **only consumes** the GCS's live `SYSTEM_UPDATE` stream and **never republishes** it (re-stamping a moving position would falsify freshness). Freshness follows the source `timestamp` carried in `SYSTEM`/`SYSTEM_UPDATE`: only a newer timestamp counts as a refresh, so an autopilot that keeps relaying the last cached packet does not keep the location alive. If no newer timestamp arrives within the expiry window, the operator location is dropped as stale. |
 
 When stale or absent, the operator location is reported via `ARM_STATUS` (`PRE_ARM_FAIL_GENERIC`, "Operator location missing or stale") — this requires status output to also be enabled — and operator position is dropped from the BLE/Wi-Fi broadcast.
 
-The republish timestamp (a Unix-2019 epoch) is seeded from the autopilot's `SYSTEM_TIME` message; until a valid `SYSTEM_TIME` has been seen, the loop holds off transmitting. The feature requires an outbound MAVLink path (the TX GPIO on the UART transport; inherent on USB Serial/JTAG) and is only available when MAVLink input is enabled.
+The republish timestamp (a Unix-2019 epoch) comes from the shared UTC clock, seeded from the bound autopilot's `SYSTEM_TIME`; until a valid `SYSTEM_TIME` has been seen, the loop holds off transmitting. The same clock stamps the broadcast System and Authentication messages. Without it those timestamps are sent as 0 and a Location without a source timestamp as unknown (`0xFFFF`); uptime is never broadcast as UTC.
+
+On arm the current position becomes the `TAKEOFF` operator location only when the Location is fresh and no source has supplied a `FIXED` or `LIVE_GNSS` operator location; a configured pilot position is never overwritten. The feature requires an outbound MAVLink path (the TX GPIO on the UART transport; inherent on USB Serial/JTAG) and is only available when MAVLink input is enabled.
 
 #### Transport: UART or USB
 
@@ -299,7 +309,9 @@ Message IDs: `0` HEARTBEAT, `2` SYSTEM_TIME, `12900` BASIC_ID, `12901` LOCATION,
 
 ### DroneCAN Input
 
-DroneCAN input development has started and is disabled by default. This targets the DroneCAN protocol used by ArduPilot and PX4 DroneCAN peripherals and flight-controller buses. DroneCAN is the maintained UAVCAN v0-derived protocol; it is distinct from OpenCyphal/UAVCAN v1. The current milestone brings up the ESP32-S3 TWAI/CAN controller, receives DroneCAN extended CAN frames, reassembles supported multi-frame transfers, and decodes `uavcan.equipment.gnss.Fix2` plus a project-specific Remote ID identity message into the Remote ID state.
+DroneCAN input development has started and is disabled by default. This targets the DroneCAN protocol used by ArduPilot and PX4 DroneCAN peripherals and flight-controller buses. DroneCAN is the maintained UAVCAN v0-derived protocol; it is distinct from OpenCyphal/UAVCAN v1. The current milestone brings up the ESP32-S3 TWAI/CAN controller, receives DroneCAN extended CAN frames, reassembles supported multi-frame transfers (one per source node and data type, checked against the transfer CRC), recovers from bus-off, and decodes `uavcan.equipment.gnss.Fix2` plus a project-specific Remote ID identity message into the Remote ID state.
+
+> **Not yet compatible with ArduPilot's DroneCAN Remote ID (`DID_CANDRIVER`).** ArduPilot talks to a CAN Remote ID module with the standard `dronecan.remoteid` messages (`BasicID` 20030, `Location` 20031, `SelfID` 20032, `System` 20033, `OperatorID` 20034, `ArmStatus` 20035, `SecureCommand` 64). This firmware does not implement them yet, so use MAVLink to connect to ArduPilot. With DroneCAN alone there is also no source for the operator location or System message.
 
 No extra git submodule is required for this first milestone; it uses ESP-IDF's built-in TWAI driver. A later milestone that decodes DroneCAN DSDL cleanly may add a small UAVCAN/DroneCAN support library or generated DSDL sources, but that should be decided when the target flight-controller messages are confirmed.
 
@@ -312,26 +324,26 @@ No extra git submodule is required for this first milestone; it uses ESP-IDF's b
 | `Local DroneCAN node ID` | `0` | Reserved for future active participation. Current implementation receives only and does not publish DroneCAN transfers. |
 | `Accept anonymous DroneCAN transfers` | Enabled | Allows source node ID `0` message transfers. |
 | `Use CAN listen-only mode` | Disabled | Sniffs the bus without ACKing frames. Leave disabled for normal FC-to-ESP operation. |
-| `Remote ID identity DroneCAN data type ID` | `20000` | Vendor-specific DroneCAN data type ID for the custom Remote ID identity message. Publisher and receiver must match. |
+| `Remote ID identity DroneCAN data type ID` | `20990` | Vendor-specific DroneCAN data type ID for the custom Remote ID identity message. Publisher and receiver must match. Do not use `20000`: that is `ardupilot.indication.SafetyState`, which ArduPilot publishes. |
 
 Currently decoded messages:
 
 | DroneCAN message | Data type ID | Remote ID fields updated |
 |------------------|--------------|--------------------------|
-| `uavcan.equipment.gnss.Fix2` | `1063` | Latitude, longitude, altitude, horizontal speed, vertical speed, track direction, fix status, and coarse accuracy flags. |
-| `com.peinser.remoteid.Identity` | `20000` by default | Basic ID UAS ID/type, UA type, and Operator ID. |
+| `uavcan.equipment.gnss.Fix2` | `1063` | Latitude and longitude (2D or 3D fix), geodetic altitude from `height_ellipsoid_mm` (3D fix only), horizontal speed, vertical speed and track direction. Barometric altitude, status and accuracies are broadcast as unknown/undeclared: a GNSS provides no pressure altitude or airborne state, and the covariance is not decoded. |
+| `com.peinser.remoteid.Identity` | `20990` by default | Basic ID UAS ID/type, UA type, and Operator ID. |
 
 The firmware also recognizes `uavcan.protocol.NodeStatus` (`341`) and `uavcan.equipment.gnss.Fix` (`1060`) in logs, but `Fix2` and the custom identity message are the messages that update Remote ID state in this milestone.
 
 #### Custom Remote ID Identity Message
 
-ArduPilot/PX4 DroneCAN does not define a standard Remote ID identity message equivalent to MAVLink `OPEN_DRONE_ID_BASIC_ID` and `OPEN_DRONE_ID_OPERATOR_ID`. This firmware therefore supports a project-specific DroneCAN message for publishers that you control.
+Until the standard `dronecan.remoteid` messages are supported (see above), this firmware supports a project-specific DroneCAN message for publishers that you control.
 
-Use this DSDL definition and configure its data type ID to match `REMOTEID_DRONECAN_REMOTEID_IDENTITY_DTID`. A suitable file path for a publisher DSDL tree is `com/peinser/remoteid/20000.Identity.uavcan`:
+Use this DSDL definition and configure its data type ID to match `REMOTEID_DRONECAN_REMOTEID_IDENTITY_DTID`. A suitable file path for a publisher DSDL tree is `com/peinser/remoteid/20990.Identity.uavcan`. The full name and fields must match exactly: the firmware checks the multi-frame transfer CRC with this definition's data type signature, `0x8B6C35BEB36768DF`.
 
 ```text
 # com.peinser.remoteid.Identity
-# Default data type ID used by this firmware: 20000
+# Default data type ID used by this firmware: 20990
 
 uint8 id_type        # ASTM/OpenDroneID ODID_idtype_t value
 uint8 ua_type        # ASTM/OpenDroneID ODID_uatype_t value
@@ -505,13 +517,13 @@ The screenshot below shows the OpenDroneID Android app receiving live advertisem
 
 ## Authentication (F3411-22a Ed25519)
 
-The firmware supports ASTM F3411-22a message set authentication using Ed25519 signatures. When enabled, the four-message set (BasicID + Location + System + OperatorID) is signed on every broadcast cycle and the 64-byte signature is broadcast across four authentication pages.
+The firmware supports ASTM F3411-22a message set authentication using Ed25519 signatures. When enabled, the message set (Basic ID + Location + System + Operator ID + Self ID) is signed on every broadcast cycle and the 64-byte signature is broadcast across four authentication pages.
 
 ### How it works
 
 Each broadcast cycle the firmware:
 
-1. Encodes the four base ODID messages into their 25-byte wire format (100 bytes total)
+1. Takes the five ODID messages as last broadcast, in the order Basic ID, Location, System, Operator ID, Self ID, each in its 25-byte wire format (125 bytes total)
 2. Signs those bytes with the configured Ed25519 private key
 3. Distributes the 64-byte signature across four authentication pages (page 0: 17 bytes + metadata, pages 1–3: 23/23/1 bytes)
 4. Broadcasts the auth pages alongside the base messages
@@ -539,7 +551,8 @@ The firmware only needs the private key. The certificate lives in your registry.
 
 ### Assumptions and limitations
 
-- **No real-time clock.** The timestamp in auth page 0 is seconds since boot, not UTC. This satisfies the wire format but limits anti-replay protection. A GPS or NTP time source would provide a meaningful timestamp.
+- **Clock.** The timestamp in auth page 0 is seconds since 2019-01-01 UTC from the shared clock seeded by the autopilot's `SYSTEM_TIME`. Without MAVLink time it is 0, which limits anti-replay protection.
+- **Authentication received over MAVLink** is relayed verbatim and replaces local signing. A message set signature made by the autopilot covers the messages the autopilot encoded, not the bytes this module broadcasts (the module re-encodes them), so receivers cannot verify such a relayed message set signature.
 - **Private key security.** The key is only as safe as the flash it lives in. Without flash encryption the raw key bytes are readable directly off the chip. See [Flash encryption](#flash-encryption) below.
 
 ### Key generation
@@ -579,7 +592,7 @@ The firmware looks for the private key in this order:
 1. **Compiled-in**: `REMOTEID_AUTH_PRIVATE_KEY_PEM` in Kconfig/sdkconfig. Used during development; takes priority when set.
 2. **NVS**: NVS namespace `remoteid_auth`, key `private_key`. Used in production; the flash encryption hardware protects it at rest.
 
-If neither source has a key the firmware aborts at startup with an error log.
+If neither source has a valid key, the firmware logs an error, reports a Remote ID system failure (broadcast status, `ARM_STATUS` and the error indicator) and keeps broadcasting unsigned.
 
 ### Development configuration
 
@@ -898,7 +911,7 @@ The first flash writes the firmware to `ota_0`. Subsequent OTA updates alternate
 
 ### BLE schedule with authentication
 
-When authentication is enabled the BLE schedule extends from 8 to 12 slots (3 seconds per full cycle at 250 ms per slot). Auth pages 0–3 are appended after the base message rotation. The Location and System messages are refreshed immediately before signing so auth pages always cover the most recent state.
+When authentication is enabled the four auth pages follow the 10-slot base rotation at 100 ms each (2.9 s per full cycle at 250 ms per slot). The signature covers the most recently broadcast copy of each message; Location and System are not re-encoded for signing, because their timestamps would then differ from what receivers saw.
 
 ## Web Configurator (Cloudbuild)
 

@@ -18,14 +18,16 @@ typedef enum remoteid_store_update_type {
     REMOTEID_STORE_UPDATE_OPERATOR_LOCATION_EXPIRE,
     // Self-test failed: latch a Remote ID system-failure. Carries no payload.
     REMOTEID_STORE_UPDATE_SELFTEST_FAILED,
-    // Live autopilot emergency state, derived from HEARTBEAT system_status.
+    // Autopilot emergency state, derived from HEARTBEAT system_status. Latched
+    // unless CONFIG_REMOTEID_MAVLINK_EMERGENCY_LATCH is disabled.
     REMOTEID_STORE_UPDATE_EMERGENCY,
     REMOTEID_STORE_UPDATE_SELF_ID,
     // A single received Authentication page. The store accumulates pages and
     // marks external auth ready once 0..LastPageIndex have all arrived.
     REMOTEID_STORE_UPDATE_AUTH,
-    // Snapshot the current location into the System operator position fields.
-    // Carries no payload; the store reads from its own location state atomically.
+    // Vehicle armed: use the current location as the takeoff operator position.
+    // Carries no payload. Ignored when the location is stale, or when a source
+    // already supplies a live or fixed operator location.
     REMOTEID_STORE_UPDATE_TAKEOFF,
 } remoteid_store_update_type_t;
 
@@ -33,7 +35,7 @@ typedef struct remoteid_store_update {
     remoteid_store_update_type_t type;
     union {
         struct {
-            char uas_id[ODID_ID_SIZE + 1];
+            char uas_id[ODID_ID_SIZE + 1]; // 20 raw bytes, see remoteid_state_t
             ODID_idtype_t id_type;
             ODID_uatype_t ua_type;
         } basic_id;
@@ -65,7 +67,7 @@ typedef struct remoteid_store_update {
             ODID_Vertical_accuracy_t baro_acc;
             ODID_Speed_accuracy_t speed_acc;
             ODID_Timestamp_accuracy_t ts_acc;
-            float timestamp;
+            float timestamp;                // seconds after the UTC hour, < 0 if unknown
         } location;
         struct {
             bool has_operator_position;
@@ -80,12 +82,14 @@ typedef struct remoteid_store_update {
             ODID_classification_type_t classification_type;
             ODID_category_EU_t eu_category;
             ODID_class_EU_t eu_class;
+            uint32_t timestamp;             // source time, seconds since 2019-01-01 UTC
         } system;
         struct {
             bool has_operator_position;
             double operator_latitude;
             double operator_longitude;
             float operator_altitude_geo_m;
+            uint32_t timestamp;             // source time, seconds since 2019-01-01 UTC
         } system_update;
         struct {
             bool active;
@@ -101,6 +105,10 @@ typedef enum remoteid_health {
     REMOTEID_HEALTH_WAITING_OPERATOR_ID,
     REMOTEID_HEALTH_INVALID_SERIAL,
     REMOTEID_HEALTH_SELFTEST_FAILED,
+    // Transports not started yet, or a transport/runtime fault not yet latched.
+    REMOTEID_HEALTH_TRANSPORTS_NOT_RUNNING,
+    // A runtime position source is configured but no fresh Location arrived.
+    REMOTEID_HEALTH_LOCATION_STALE,
 } remoteid_health_t;
 
 esp_err_t remoteid_store_start(const remoteid_state_t *initial_state);
